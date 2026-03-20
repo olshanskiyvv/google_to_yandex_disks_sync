@@ -1,122 +1,252 @@
-import io
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+import httpx
 
 from config import config
 from logger import logger
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+GOOGLE_API_BASE = "https://www.googleapis.com/drive/v3"
 
 
 class GoogleDriveClient:
     def __init__(self):
-        self.service = None
-        self.creds = None
+        self.http_client: httpx.AsyncClient | None = None
+        self.client_id: str | None = None
+        self.client_secret: str | None = None
+        self.access_token: str | None = None
+        self.refresh_token: str | None = None
 
-    def authenticate(self) -> None:
-        creds_path = Path(config.google_credentials_file)
-        token_path = Path(config.google_token_file)
+    async def __aenter__(self) -> "GoogleDriveClient":
+        self.http_client = httpx.AsyncClient(timeout=30.0)
+        return self
 
-        if token_path.exists():
-            self.creds = Credentials.from_authorized_user_file(
-                str(token_path), SCOPES
-            )
+    async def __aexit__(self, *args: Any) -> None:
+        if self.http_client:
+            await self.http_client.aclose()
 
-        if not self.creds or not self.creds.valid:
-            if self.creds and self.creds.expired and self.creds.refresh_token:
-                self.creds.refresh(Request())
-            else:
-                if not creds_path.exists():
-                    raise FileNotFoundError(
-                        f"Файл credentials не найден: {creds_path}"
-                    )
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    str(creds_path), SCOPES
-                )
-                self.creds = flow.run_local_server(port=0)
+    async def authenticate(self) -> None:
+        self._load_credentials()
 
-            token_path.write_text(self.creds.to_json())
+        if await self._try_load_token():
+            logger.info("Успешная авторизация в Google Drive")
+            return
 
-        self.service = build("drive", "v3", credentials=self.creds)
+        await self._oauth_flow()
         logger.info("Успешная авторизация в Google Drive")
 
-    def list_files(self, folder_id: str) -> list[dict[str, Any]]:
-        if not self.service:
+    def _load_credentials(self) -> None:
+        creds_path = Path(config.google_credentials_file)
+        if not creds_path.exists():
+            raise FileNotFoundError(f"Файл credentials не найден: {creds_path}")
+
+        with open(creds_path) as f:
+            data = json.load(f)
+
+        installed = data.get("installed", {})
+        self.client_id = installed.get("client_id")
+        self.client_secret = installed.get("client_secret")
+
+        if not self.client_id or not self.client_secret:
+            raise ValueError("client_id или client_secret не найдены в credentials.json")
+
+    async def _try_load_token(self) -> bool:
+        token_path = Path(config.google_token_file)
+        if not token_path.exists():
+            return False
+
+        with open(token_path) as f:
+            data = json.load(f)
+
+        self.access_token = data.get("access_token")
+        self.refresh_token = data.get("refresh_token")
+
+        if await self._check_token_valid():
+            return True
+
+        if self.refresh_token:
+            await self._refresh_access_token()
+            self._save_token()
+            return True
+
+        return False
+
+    async def _check_token_valid(self) -> bool:
+        if not self.access_token or not self.http_client:
+            return False
+
+        try:
+            response = await self.http_client.get(
+                f"{GOOGLE_API_BASE}/about",
+                params={"fields": "user"},
+                headers={"Authorization": f"Bearer {self.access_token}"},
+            )
+            return response.status_code == 200
+        except Exception:
+            return False
+
+    async def _refresh_access_token(self) -> None:
+        if not self.http_client or not self.client_id or not self.client_secret:
+            raise RuntimeError("Клиент не инициализирован")
+
+        response = await self.http_client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "refresh_token": self.refresh_token,
+                "grant_type": "refresh_token",
+            },
+        )
+
+        if response.status_code != 200:
+            raise ValueError(f"Ошибка обновления токена: {response.text}")
+
+        data = response.json()
+        self.access_token = data["access_token"]
+
+    async def _oauth_flow(self) -> None:
+        if not self.client_id:
+            raise RuntimeError("client_id не загружен")
+
+        auth_url = (
+            "https://accounts.google.com/o/oauth2/v2/auth?"
+            f"client_id={self.client_id}&"
+            "redirect_uri=http://localhost&"
+            "response_type=code&"
+            f"scope={' '.join(SCOPES)}&"
+            "access_type=offline&"
+            "prompt=consent"
+        )
+
+        print("\n" + "=" * 70)
+        print("Для авторизации откройте в браузере:")
+        print(auth_url)
+        print("=" * 70)
+        print("\nПосле авторизации вы будете перенаправлены на http://localhost?code=XXX")
+        print("Скопируйте параметр code из адресной строки\n")
+
+        code = input("Введите код авторизации: ").strip()
+
+        await self._exchange_code_for_token(code)
+        self._save_token()
+
+    async def _exchange_code_for_token(self, code: str) -> None:
+        if not self.http_client or not self.client_id or not self.client_secret:
+            raise RuntimeError("Клиент не инициализирован")
+
+        response = await self.http_client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "code": code,
+                "redirect_uri": "http://localhost",
+                "grant_type": "authorization_code",
+            },
+        )
+
+        if response.status_code != 200:
+            raise ValueError(f"Ошибка получения токена: {response.text}")
+
+        data = response.json()
+        self.access_token = data["access_token"]
+        self.refresh_token = data.get("refresh_token")
+
+    def _save_token(self) -> None:
+        token_path = Path(config.google_token_file)
+        token_path.write_text(
+            json.dumps(
+                {
+                    "access_token": self.access_token,
+                    "refresh_token": self.refresh_token,
+                },
+                indent=2,
+            )
+        )
+
+    async def list_files(self, folder_id: str) -> list[dict[str, Any]]:
+        if not self.access_token or not self.http_client:
             raise RuntimeError("Клиент не авторизован")
 
-        files = []
-        self._list_files_recursive(folder_id, "", files)
+        files: list[dict[str, Any]] = []
+        await self._list_files_recursive(folder_id, "", files)
 
         logger.info(f"Найдено {len(files)} файлов в Google Drive")
         return files
 
-    def _list_files_recursive(
+    async def _list_files_recursive(
         self, folder_id: str, base_path: str, files: list[dict[str, Any]]
     ) -> None:
-        if not self.service:
+        if not self.http_client or not self.access_token:
             raise RuntimeError("Клиент не авторизован")
 
-        query = f"'{folder_id}' in parents and trashed = false"
+        page_token: str | None = None
 
-        page_token = None
         while True:
-            results = (
-                self.service.files()
-                .list(
-                    q=query,
-                    pageSize=100,
-                    fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
-                    pageToken=page_token,
-                )
-                .execute()
+            params = {
+                "q": f"'{folder_id}' in parents and trashed = false",
+                "fields": "nextPageToken, files(id, name, mimeType, modifiedTime, size)",
+                "pageSize": 100,
+                "pageToken": page_token,
+            }
+
+            response = await self.http_client.get(
+                f"{GOOGLE_API_BASE}/files",
+                params=params,
+                headers={"Authorization": f"Bearer {self.access_token}"},
             )
 
-            items = results.get("files", [])
+            if response.status_code != 200:
+                raise RuntimeError(f"Ошибка API Google Drive: {response.text}")
+
+            data = response.json()
+            items = data.get("files", [])
+
             for item in items:
                 mime_type = item["mimeType"]
                 item_name = item["name"]
                 item_path = f"{base_path}/{item_name}" if base_path else item_name
 
                 if mime_type == "application/vnd.google-apps.folder":
-                    self._list_files_recursive(item["id"], item_path, files)
+                    await self._list_files_recursive(item["id"], item_path, files)
                 else:
+                    modified_str = item.get("modifiedTime", "")
+                    try:
+                        modified = datetime.fromisoformat(
+                            modified_str.replace("Z", "+00:00")
+                        )
+                    except ValueError:
+                        modified = datetime.now(timezone.utc)
+
                     files.append({
                         "id": item["id"],
                         "name": item_name,
                         "path": item_path,
-                        "modified": datetime.fromisoformat(
-                            item["modifiedTime"].replace("Z", "+00:00")
-                        ),
+                        "modified": modified,
                         "size": int(item.get("size", 0)),
                     })
 
-            page_token = results.get("nextPageToken")
+            page_token = data.get("nextPageToken")
             if not page_token:
                 break
 
-    def download_file(self, file_id: str, file_path: str) -> io.BytesIO:
-        if not self.service:
+    async def download_stream(self, file_id: str, file_path: str) -> AsyncIterator[bytes]:
+        if not self.http_client or not self.access_token:
             raise RuntimeError("Клиент не авторизован")
 
         logger.info(f"Скачивание: {file_path}")
 
-        request = self.service.files().get_media(fileId=file_id)
-        buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(buffer, request)
+        url = f"{GOOGLE_API_BASE}/files/{file_id}"
+        params = {"alt": "media"}
+        headers = {"Authorization": f"Bearer {self.access_token}"}
 
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-            if status:
-                progress = int(status.progress() * 100)
-                logger.debug(f"Прогресс {file_path}: {progress}%")
+        async with self.http_client.stream("GET", url, params=params, headers=headers) as response:
+            if response.status_code != 200:
+                raise RuntimeError(f"Ошибка скачивания файла: {response.status_code}")
 
-        buffer.seek(0)
-        return buffer
+            async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                yield chunk

@@ -1,3 +1,5 @@
+import asyncio
+
 from config import config
 from logger import logger
 from sync import SyncManager
@@ -14,15 +16,21 @@ def main() -> None:
         return
 
     try:
-        sync_manager = SyncManager()
-        sync_manager.run()
+        asyncio.run(_async_main())
     except FileNotFoundError as e:
         logger.error(f"Файл не найден: {e}")
     except ValueError as e:
         logger.error(f"Ошибка конфигурации: {e}")
+    except KeyboardInterrupt:
+        logger.info("Синхронизация прервана пользователем")
     except Exception as e:
         logger.error(f"Неожиданная ошибка: {e}")
         raise
+
+
+async def _async_main() -> None:
+    sync_manager = SyncManager()
+    await sync_manager.run()
 
 
 if __name__ == "__main__":
