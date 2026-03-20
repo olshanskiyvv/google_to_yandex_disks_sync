@@ -63,17 +63,18 @@ class YandexDiskClient:
             raise RuntimeError("Клиент не авторизован")
 
         for item in self.client.listdir(folder):
-            item_path = f"{base_path}/{item.name}" if base_path else item.name
+            item_name = item.name or ""
+            item_path = f"{base_path}/{item_name}" if base_path else item_name
 
-            if item.type == "dir":
+            if item.type == "dir" and item.path:
                 self._list_files_recursive(item.path, item_path, files)
-            elif item.type == "file":
+            elif item.type == "file" and item_path:
                 files[item_path] = {
-                    "name": item.name,
+                    "name": item_name,
                     "path": item_path,
                     "modified": item.modified,
                     "size": item.size or 0,
-                    "full_path": item.path,
+                    "full_path": item.path or "",
                 }
 
     def upload_file(

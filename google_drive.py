@@ -60,6 +60,9 @@ class GoogleDriveClient:
     def _list_files_recursive(
         self, folder_id: str, base_path: str, files: list[dict[str, Any]]
     ) -> None:
+        if not self.service:
+            raise RuntimeError("Клиент не авторизован")
+
         query = f"'{folder_id}' in parents and trashed = false"
 
         page_token = None
