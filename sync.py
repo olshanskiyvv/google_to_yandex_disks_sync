@@ -25,7 +25,7 @@ class SyncManager:
 
         self.yandex_client.ensure_folder_exists(config.yandex_folder)
 
-        google_files = self.google_client.list_videos(config.google_folder_id)
+        google_files = self.google_client.list_files(config.google_folder_id)
         yandex_files = self.yandex_client.list_files(config.yandex_folder)
 
         for g_file in google_files:
@@ -36,32 +36,33 @@ class SyncManager:
     def _sync_file(
         self, g_file: dict[str, Any], yandex_files: dict[str, dict[str, Any]]
     ) -> None:
-        file_name = g_file["name"]
-        remote_path = f"{config.yandex_folder.rstrip('/')}/{file_name}"
+        file_path = g_file["path"]
+        remote_path = f"{config.yandex_folder.rstrip('/')}/{file_path}"
 
-        if file_name not in yandex_files:
+        if file_path not in yandex_files:
             self._download_and_upload(g_file, remote_path, is_update=False)
             self.stats["downloaded"] += 1
         else:
-            y_file = yandex_files[file_name]
+            y_file = yandex_files[file_path]
             if g_file["modified"] > y_file["modified"]:
                 self._download_and_upload(g_file, remote_path, is_update=True)
                 self.stats["updated"] += 1
             else:
-                logger.info(f"Пропуск (актуален): {file_name}")
+                logger.info(f"Пропуск (актуален): {file_path}")
                 self.stats["skipped"] += 1
 
     def _download_and_upload(
         self, g_file: dict[str, Any], remote_path: str, is_update: bool
     ) -> None:
-        file_name = g_file["name"]
+        file_path = g_file["path"]
         action = "Обновление" if is_update else "Загрузка"
 
         try:
-            buffer = self.google_client.download_file(g_file["id"], file_name)
+            self.yandex_client.ensure_parent_folders(remote_path)
+            buffer = self.google_client.download_file(g_file["id"], file_path)
             self.yandex_client.upload_file(buffer, remote_path, overwrite=is_update)
         except Exception as e:
-            logger.error(f"Ошибка при {action.lower()} {file_name}: {e}")
+            logger.error(f"Ошибка при {action.lower()} {file_path}: {e}")
             self.stats["errors"] += 1
 
     def _print_stats(self) -> None:

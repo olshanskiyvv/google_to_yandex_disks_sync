@@ -47,16 +47,20 @@ class GoogleDriveClient:
         self.service = build("drive", "v3", credentials=self.creds)
         logger.info("Успешная авторизация в Google Drive")
 
-    def list_videos(self, folder_id: str) -> list[dict[str, Any]]:
+    def list_files(self, folder_id: str) -> list[dict[str, Any]]:
         if not self.service:
             raise RuntimeError("Клиент не авторизован")
 
-        videos = []
-        query = (
-            f"'{folder_id}' in parents and "
-            f"mimeType contains 'video/' and "
-            f"trashed = false"
-        )
+        files = []
+        self._list_files_recursive(folder_id, "", files)
+
+        logger.info(f"Найдено {len(files)} файлов в Google Drive")
+        return files
+
+    def _list_files_recursive(
+        self, folder_id: str, base_path: str, files: list[dict[str, Any]]
+    ) -> None:
+        query = f"'{folder_id}' in parents and trashed = false"
 
         page_token = None
         while True:
@@ -65,7 +69,7 @@ class GoogleDriveClient:
                 .list(
                     q=query,
                     pageSize=100,
-                    fields="nextPageToken, files(id, name, modifiedTime, size)",
+                    fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
                     pageToken=page_token,
                 )
                 .execute()
@@ -73,27 +77,32 @@ class GoogleDriveClient:
 
             items = results.get("files", [])
             for item in items:
-                videos.append({
-                    "id": item["id"],
-                    "name": item["name"],
-                    "modified": datetime.fromisoformat(
-                        item["modifiedTime"].replace("Z", "+00:00")
-                    ),
-                    "size": int(item.get("size", 0)),
-                })
+                mime_type = item["mimeType"]
+                item_name = item["name"]
+                item_path = f"{base_path}/{item_name}" if base_path else item_name
+
+                if mime_type == "application/vnd.google-apps.folder":
+                    self._list_files_recursive(item["id"], item_path, files)
+                else:
+                    files.append({
+                        "id": item["id"],
+                        "name": item_name,
+                        "path": item_path,
+                        "modified": datetime.fromisoformat(
+                            item["modifiedTime"].replace("Z", "+00:00")
+                        ),
+                        "size": int(item.get("size", 0)),
+                    })
 
             page_token = results.get("nextPageToken")
             if not page_token:
                 break
 
-        logger.info(f"Найдено {len(videos)} видео в Google Drive")
-        return videos
-
-    def download_file(self, file_id: str, file_name: str) -> io.BytesIO:
+    def download_file(self, file_id: str, file_path: str) -> io.BytesIO:
         if not self.service:
             raise RuntimeError("Клиент не авторизован")
 
-        logger.info(f"Скачивание: {file_name}")
+        logger.info(f"Скачивание: {file_path}")
 
         request = self.service.files().get_media(fileId=file_id)
         buffer = io.BytesIO()
@@ -104,7 +113,7 @@ class GoogleDriveClient:
             status, done = downloader.next_chunk()
             if status:
                 progress = int(status.progress() * 100)
-                logger.debug(f"Прогресс {file_name}: {progress}%")
+                logger.debug(f"Прогресс {file_path}: {progress}%")
 
         buffer.seek(0)
         return buffer

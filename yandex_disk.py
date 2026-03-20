@@ -1,5 +1,4 @@
 import io
-from datetime import datetime
 from typing import Any
 
 import yadisk
@@ -31,25 +30,51 @@ class YandexDiskClient:
             logger.info(f"Создание папки: {folder}")
             self.client.mkdir(folder)
 
+    def ensure_parent_folders(self, remote_path: str) -> None:
+        if not self.client:
+            raise RuntimeError("Клиент не авторизован")
+
+        parts = [p for p in remote_path.rstrip("/").split("/")[:-1] if p]
+        current_path = ""
+
+        for part in parts:
+            current_path = f"{current_path}/{part}" if current_path else f"/{part}"
+            if not self.client.exists(current_path):
+                logger.info(f"Создание папки: {current_path}")
+                self.client.mkdir(current_path)
+
     def list_files(self, folder: str) -> dict[str, dict[str, Any]]:
         if not self.client:
             raise RuntimeError("Клиент не авторизован")
 
         files = {}
         try:
-            for item in self.client.listdir(folder):
-                if item.type == "file":
-                    files[item.name] = {
-                        "name": item.name,
-                        "modified": item.modified,
-                        "size": item.size or 0,
-                        "path": item.path,
-                    }
+            self._list_files_recursive(folder, "", files)
         except yadisk.exceptions.PathNotFoundError:
             logger.warning(f"Папка {folder} не найдена на Яндекс Диск")
 
         logger.info(f"Найдено {len(files)} файлов на Яндекс Диск")
         return files
+
+    def _list_files_recursive(
+        self, folder: str, base_path: str, files: dict[str, dict[str, Any]]
+    ) -> None:
+        if not self.client:
+            raise RuntimeError("Клиент не авторизован")
+
+        for item in self.client.listdir(folder):
+            item_path = f"{base_path}/{item.name}" if base_path else item.name
+
+            if item.type == "dir":
+                self._list_files_recursive(item.path, item_path, files)
+            elif item.type == "file":
+                files[item_path] = {
+                    "name": item.name,
+                    "path": item_path,
+                    "modified": item.modified,
+                    "size": item.size or 0,
+                    "full_path": item.path,
+                }
 
     def upload_file(
         self, file_buffer: io.BytesIO, remote_path: str, overwrite: bool = False
