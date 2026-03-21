@@ -1,82 +1,17 @@
-import asyncio
-import http.server
 import json
-import socket
-import socketserver
-import threading
-import time
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
-from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 from config import config
 from logger import logger
+from oauth_callback_server import OAuthServer
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 GOOGLE_API_BASE = "https://www.googleapis.com/drive/v3"
-
-
-class OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
-    code: str | None = None
-    error: str | None = None
-
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-
-        if parsed.path == "/callback":
-            params = parse_qs(parsed.query)
-
-            if "code" in params:
-                OAuthCallbackHandler.code = params["code"][0]
-                self._send_success_response()
-            elif "error" in params:
-                OAuthCallbackHandler.error = params["error"][0]
-                self._send_error_response(params["error"][0])
-            else:
-                self.send_response(400)
-                self.end_headers()
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def _send_success_response(self) -> None:
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.end_headers()
-        html = """
-<!DOCTYPE html>
-<html>
-<head><title>Авторизация успешна</title></head>
-<body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-    <h1 style="color: #4CAF50;">Авторизация успешна!</h1>
-    <p>Вы можете закрыть это окно и вернуться к приложению.</p>
-</body>
-</html>
-        """
-        self.wfile.write(html.encode("utf-8"))
-
-    def _send_error_response(self, error: str) -> None:
-        self.send_response(400)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.end_headers()
-        html = f"""
-<!DOCTYPE html>
-<html>
-<head><title>Ошибка авторизации</title></head>
-<body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-    <h1 style="color: #f44336;">Ошибка авторизации</h1>
-    <p>{error}</p>
-</body>
-</html>
-        """
-        self.wfile.write(html.encode("utf-8"))
-
-    def log_message(self, format: str, *args: Any) -> None:
-        pass
 
 
 class GoogleDriveClient:
@@ -123,7 +58,9 @@ class GoogleDriveClient:
         self.client_secret = installed.get("client_secret")
 
         if not self.client_id or not self.client_secret:
-            raise ValueError("client_id или client_secret не найдены в credentials.json")
+            raise ValueError(
+                "client_id или client_secret не найдены в credentials.json"
+            )
 
     async def _try_load_token(self) -> bool:
         token_path = Path(config.google_token_file)
@@ -184,52 +121,29 @@ class GoogleDriveClient:
         if not self.client_id:
             raise RuntimeError("client_id не загружен")
 
-        port = self._find_free_port()
-        redirect_uri = f"http://localhost:{port}/callback"
+        server = OAuthServer()
+        server.start()
 
         auth_url = (
             "https://accounts.google.com/o/oauth2/v2/auth?"
             f"client_id={self.client_id}&"
-            f"redirect_uri={redirect_uri}&"
+            f"redirect_uri={server.redirect_uri}&"
             "response_type=code&"
             f"scope={' '.join(SCOPES)}&"
             "access_type=offline&"
             "prompt=consent"
         )
 
-        OAuthCallbackHandler.code = None
-        OAuthCallbackHandler.error = None
+        logger.info("Открываю браузер для авторизации...")
+        logger.info(f"Если браузер не открылся, перейдите по ссылке:\n{auth_url}")
 
-        with socketserver.TCPServer(("", port), OAuthCallbackHandler) as httpd:
-            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-            thread.start()
+        webbrowser.open(auth_url)
 
-            logger.info("Открываю браузер для авторизации...")
-            logger.info(f"Если браузер не открылся, перейдите по ссылке:\n{auth_url}")
+        logger.info("Ожидаю авторизацию в браузере (таймаут: 2 минуты)...")
 
-            webbrowser.open(auth_url)
+        code = await server.wait_for_code(120)
 
-            logger.info("Ожидаю авторизацию в браузере (таймаут: 2 минуты)...")
-
-            timeout = 120
-            start_time = time.time()
-
-            while OAuthCallbackHandler.code is None and OAuthCallbackHandler.error is None:
-                if time.time() - start_time > timeout:
-                    httpd.shutdown()
-                    raise TimeoutError("Таймаут ожидания авторизации (2 минуты)")
-                await asyncio.sleep(0.5)
-
-            httpd.shutdown()
-
-        if OAuthCallbackHandler.error:
-            raise ValueError(f"Ошибка авторизации: {OAuthCallbackHandler.error}")
-
-        if not OAuthCallbackHandler.code:
-            raise ValueError("Код авторизации не получен")
-
-        code = OAuthCallbackHandler.code
-        await self._exchange_code_for_token(code, redirect_uri)
+        await self._exchange_code_for_token(code, server.redirect_uri)
         self._save_token()
 
     async def _oauth_flow_manual(self) -> None:
@@ -250,19 +164,15 @@ class GoogleDriveClient:
         print("Для авторизации откройте в браузере:")
         print(auth_url)
         print("=" * 70)
-        print("\nПосле авторизации вы будете перенаправлены на http://localhost?code=XXX")
+        print(
+            "\nПосле авторизации вы будете перенаправлены на http://localhost?code=XXX"
+        )
         print("Скопируйте параметр code из адресной строки\n")
 
         code = input("Введите код авторизации: ").strip()
 
         await self._exchange_code_for_token(code, "http://localhost")
         self._save_token()
-
-    def _find_free_port(self) -> int:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("", 0))
-            s.listen(1)
-            return s.getsockname()[1]
 
     async def _exchange_code_for_token(
         self, code: str, redirect_uri: str = "http://localhost"
@@ -354,19 +264,23 @@ class GoogleDriveClient:
                     except ValueError:
                         modified = datetime.now(timezone.utc)
 
-                    files.append({
-                        "id": item["id"],
-                        "name": item_name,
-                        "path": item_path,
-                        "modified": modified,
-                        "size": int(item.get("size", 0)),
-                    })
+                    files.append(
+                        {
+                            "id": item["id"],
+                            "name": item_name,
+                            "path": item_path,
+                            "modified": modified,
+                            "size": int(item.get("size", 0)),
+                        }
+                    )
 
             page_token = data.get("nextPageToken")
             if not page_token:
                 break
 
-    async def download_stream(self, file_id: str, file_path: str) -> AsyncIterator[bytes]:
+    async def download_stream(
+        self, file_id: str, file_path: str
+    ) -> AsyncIterator[bytes]:
         if not self.http_client or not self.access_token:
             raise RuntimeError("Клиент не авторизован")
 
@@ -376,7 +290,9 @@ class GoogleDriveClient:
         params = {"alt": "media"}
         headers = {"Authorization": f"Bearer {self.access_token}"}
 
-        async with self.http_client.stream("GET", url, params=params, headers=headers) as response:
+        async with self.http_client.stream(
+            "GET", url, params=params, headers=headers
+        ) as response:
             if response.status_code != 200:
                 raise RuntimeError(f"Ошибка скачивания файла: {response.status_code}")
 
