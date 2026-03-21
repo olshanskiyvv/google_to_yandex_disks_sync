@@ -48,8 +48,8 @@ async def _async_main(use_auto_oauth: bool = True) -> None:
     )
 
     sync_manager = SyncManager(sync_config)
-    await sync_manager.run(
-        google_folder_id=config.google_folder_id,
+    await sync_manager.sync(
+        google_folder=config.google_folder,
         yandex_folder=config.yandex_folder,
     )
 

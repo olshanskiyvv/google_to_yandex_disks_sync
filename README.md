@@ -54,20 +54,57 @@ cp .env.example .env
 # Google Drive
 GOOGLE_CREDENTIALS_FILE=credentials.json
 GOOGLE_TOKEN_FILE=token.json
-GOOGLE_FOLDER_ID=1ABC123xyz...
+
+# Google folder (URL или ID папки)
+GOOGLE_FOLDER=1ABC123xyz...
 
 # Яндекс Диск
 YANDEX_TOKEN=AQAAA...
-YANDEX_FOLDER=/backup/videos
 
-# Путь к папке на Яндекс Диск указывайте с обычными пробелами:
-# YANDEX_FOLDER=/Мои видео/Лекции 2024
-# НЕ используйте URL-кодирование (%20 вместо пробелов)
+# Яндекс folder (URL или путь к папке)
+YANDEX_FOLDER=/backup/videos
 
 # Логирование
 LOG_FILE=sync.log
 LOG_LEVEL=INFO
 ```
+
+### 4. Указание папок для синхронизации
+
+#### Google Drive
+
+Параметр `GOOGLE_FOLDER` принимает:
+
+1. **ID папки**:
+   ```env
+   GOOGLE_FOLDER=1ABC123xyz...
+   ```
+   ID можно найти в URL папки: `https://drive.google.com/drive/folders/1ABC123xyz...`
+
+2. **Ссылку на папку**:
+   ```env
+   GOOGLE_FOLDER=https://drive.google.com/drive/folders/1ABC123xyz...
+   ```
+   Поддерживаемые форматы ссылок:
+   - `https://drive.google.com/drive/folders/{id}`
+   - `https://drive.google.com/drive/u/0/folders/{id}` (с номером аккаунта)
+   - `https://drive.google.com/open?id={id}`
+
+#### Яндекс Диск
+
+Параметр `YANDEX_FOLDER` принимает:
+
+1. **Путь к папке**:
+   ```env
+   YANDEX_FOLDER=/backup/videos
+   ```
+   Путь указывается с обычными пробелами (без URL-кодирования).
+
+2. **Ссылку на папку**:
+   ```env
+   YANDEX_FOLDER=https://disk.yandex.ru/client/disk/backup/videos
+   ```
+   Ссылка должна быть персональной (открывается при переходе к папке в браузере).
 
 ## Запуск
 
@@ -136,16 +173,18 @@ crontab -e
 
 ```
 disks_sync/
-├── main.py           # Точка входа
-├── config.py         # Загрузка настроек
-├── sync.py           # Логика синхронизации
-├── google_drive.py   # Google Drive API клиент
-├── yandex_disk.py    # Яндекс Диск API клиент
-├── logger.py         # Настройка логирования
-├── pyproject.toml    # Зависимости
-├── .env              # Настройки (не коммитить)
-├── .env.example      # Пример настроек
-├── credentials.json  # Google credentials (не коммитить)
-├── token.json        # Google токен (не коммитить)
-└── sync.log          # Логи (не коммитить)
+├── main.py                   # Точка входа
+├── config.py                 # Загрузка настроек
+├── sync.py                   # Логика синхронизации
+├── google_drive.py           # Google Drive API клиент
+├── yandex_disk.py            # Яндекс Диск API клиент
+├── oauth_callback_server.py  # OAuth callback сервер
+├── url_parser.py             # Парсинг ссылок
+├── logger.py                 # Настройка логирования
+├── pyproject.toml            # Зависимости
+├── .env                      # Настройки (не коммитить)
+├── .env.example              # Пример настроек
+├── credentials.json          # Google credentials (не коммитить)
+├── token.json                # Google токен (не коммитить)
+└── sync.log                  # Логи (не коммитить)
 ```

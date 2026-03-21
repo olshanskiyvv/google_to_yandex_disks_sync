@@ -4,6 +4,7 @@ from typing import Any
 
 from google_drive import GoogleDriveClient
 from logger import logger
+from url_parser import parse_google_folder_url, parse_yandex_folder_url
 from yandex_disk import YandexDiskClient
 
 MAX_RETRIES = 2
@@ -33,10 +34,20 @@ class SyncManager:
         self.stats_lock = asyncio.Lock()
         self._yandex_folder: str = ""
 
-    async def run(self, google_folder_id: str, yandex_folder: str) -> None:
+    async def sync(self, google_folder: str, yandex_folder: str) -> None:
+        """
+        Синхронизация папок.
+
+        Args:
+            google_folder: URL папки Google Drive или ID папки
+            yandex_folder: URL папки Яндекс Диск или путь к папке
+        """
         logger.info("=== Начало синхронизации ===")
 
-        self._yandex_folder = yandex_folder
+        google_folder_id = parse_google_folder_url(google_folder)
+        yandex_folder_path = parse_yandex_folder_url(yandex_folder)
+
+        self._yandex_folder = yandex_folder_path
 
         async with (
             GoogleDriveClient(
@@ -52,10 +63,10 @@ class SyncManager:
             await self.google_client.authenticate()
             await self.yandex_client.authenticate()
 
-            await self.yandex_client.ensure_folder_exists(yandex_folder)
+            await self.yandex_client.ensure_folder_exists(yandex_folder_path)
 
             google_files = await self.google_client.list_files(google_folder_id)
-            yandex_files = await self.yandex_client.list_files(yandex_folder)
+            yandex_files = await self.yandex_client.list_files(yandex_folder_path)
 
             tasks = [
                 self._sync_file_limited(g_file, yandex_files) for g_file in google_files
