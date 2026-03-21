@@ -11,7 +11,8 @@ RETRY_DELAY = 5
 
 
 class SyncManager:
-    def __init__(self):
+    def __init__(self, use_auto_oauth: bool = True):
+        self.use_auto_oauth = use_auto_oauth
         self.google_client: GoogleDriveClient | None = None
         self.yandex_client: YandexDiskClient | None = None
         self.semaphore = asyncio.Semaphore(5)
@@ -26,7 +27,7 @@ class SyncManager:
     async def run(self) -> None:
         logger.info("=== Начало синхронизации ===")
 
-        async with GoogleDriveClient() as google, YandexDiskClient() as yandex:
+        async with GoogleDriveClient(use_auto_oauth=self.use_auto_oauth) as google, YandexDiskClient() as yandex:
             self.google_client = google
             self.yandex_client = yandex
 

@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 
 from config import config
@@ -6,6 +7,16 @@ from sync import SyncManager
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Синхронизация Google Drive → Яндекс Диск"
+    )
+    parser.add_argument(
+        "--manual-oauth",
+        action="store_true",
+        help="Использовать ручной ввод кода авторизации Google (по умолчанию: автоматический)",
+    )
+    args = parser.parse_args()
+
     errors = config.validate()
     if errors:
         for error in errors:
@@ -16,7 +27,7 @@ def main() -> None:
         return
 
     try:
-        asyncio.run(_async_main())
+        asyncio.run(_async_main(use_auto_oauth=not args.manual_oauth))
     except FileNotFoundError as e:
         logger.error(f"Файл не найден: {e}")
     except ValueError as e:
@@ -28,8 +39,8 @@ def main() -> None:
         raise
 
 
-async def _async_main() -> None:
-    sync_manager = SyncManager()
+async def _async_main(use_auto_oauth: bool = True) -> None:
+    sync_manager = SyncManager(use_auto_oauth=use_auto_oauth)
     await sync_manager.run()
 
 
