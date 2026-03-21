@@ -1,7 +1,7 @@
 import asyncio
+from dataclasses import dataclass
 from typing import Any
 
-from config import config
 from google_drive import GoogleDriveClient
 from logger import logger
 from yandex_disk import YandexDiskClient
@@ -10,9 +10,17 @@ MAX_RETRIES = 2
 RETRY_DELAY = 5
 
 
+@dataclass
+class SyncConfig:
+    google_credentials_file: str
+    google_token_file: str
+    google_use_auto_oauth: bool
+    yandex_token: str
+
+
 class SyncManager:
-    def __init__(self, use_auto_oauth: bool = True):
-        self.use_auto_oauth = use_auto_oauth
+    def __init__(self, config: SyncConfig):
+        self.config = config
         self.google_client: GoogleDriveClient | None = None
         self.yandex_client: YandexDiskClient | None = None
         self.semaphore = asyncio.Semaphore(5)
@@ -23,25 +31,34 @@ class SyncManager:
             "errors": 0,
         }
         self.stats_lock = asyncio.Lock()
+        self._yandex_folder: str = ""
 
-    async def run(self) -> None:
+    async def run(self, google_folder_id: str, yandex_folder: str) -> None:
         logger.info("=== Начало синхронизации ===")
 
-        async with GoogleDriveClient(use_auto_oauth=self.use_auto_oauth) as google, YandexDiskClient() as yandex:
+        self._yandex_folder = yandex_folder
+
+        async with (
+            GoogleDriveClient(
+                credentials_file=self.config.google_credentials_file,
+                token_file=self.config.google_token_file,
+                use_auto_oauth=self.config.google_use_auto_oauth,
+            ) as google,
+            YandexDiskClient(token=self.config.yandex_token) as yandex,
+        ):
             self.google_client = google
             self.yandex_client = yandex
 
             await self.google_client.authenticate()
             await self.yandex_client.authenticate()
 
-            await self.yandex_client.ensure_folder_exists(config.yandex_folder)
+            await self.yandex_client.ensure_folder_exists(yandex_folder)
 
-            google_files = await self.google_client.list_files(config.google_folder_id)
-            yandex_files = await self.yandex_client.list_files(config.yandex_folder)
+            google_files = await self.google_client.list_files(google_folder_id)
+            yandex_files = await self.yandex_client.list_files(yandex_folder)
 
             tasks = [
-                self._sync_file_limited(g_file, yandex_files)
-                for g_file in google_files
+                self._sync_file_limited(g_file, yandex_files) for g_file in google_files
             ]
 
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -58,10 +75,12 @@ class SyncManager:
         self, g_file: dict[str, Any], yandex_files: dict[str, dict[str, Any]]
     ) -> None:
         file_path = g_file["path"]
-        remote_path = f"{config.yandex_folder.rstrip('/')}/{file_path}"
+        remote_path = f"{self._yandex_folder.rstrip('/')}/{file_path}"
 
         if file_path not in yandex_files:
-            success = await self._download_and_upload(g_file, remote_path, is_update=False)
+            success = await self._download_and_upload(
+                g_file, remote_path, is_update=False
+            )
             async with self.stats_lock:
                 if success:
                     self.stats["downloaded"] += 1
@@ -70,7 +89,9 @@ class SyncManager:
         else:
             y_file = yandex_files[file_path]
             if g_file["modified"] > y_file["modified"]:
-                success = await self._download_and_upload(g_file, remote_path, is_update=True)
+                success = await self._download_and_upload(
+                    g_file, remote_path, is_update=True
+                )
                 async with self.stats_lock:
                     if success:
                         self.stats["updated"] += 1
@@ -95,7 +116,9 @@ class SyncManager:
             try:
                 await self.yandex_client.ensure_parent_folders(remote_path)
                 stream = self.google_client.download_stream(g_file["id"], file_path)
-                await self.yandex_client.upload_stream(stream, remote_path, overwrite=is_update)
+                await self.yandex_client.upload_stream(
+                    stream, remote_path, overwrite=is_update
+                )
                 return True
             except Exception as e:
                 error_type = type(e).__name__
@@ -109,7 +132,9 @@ class SyncManager:
                     await asyncio.sleep(RETRY_DELAY)
                     continue
 
-                logger.error(f"Ошибка при {action.lower()} {file_path}: {error_type}: {error_msg}")
+                logger.error(
+                    f"Ошибка при {action.lower()} {file_path}: {error_type}: {error_msg}"
+                )
 
                 if await self._check_file_uploaded(remote_path):
                     logger.warning(f"Файл загружен несмотря на ошибку: {file_path}")

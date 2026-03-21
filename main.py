@@ -3,7 +3,7 @@ import asyncio
 
 from config import config
 from logger import logger
-from sync import SyncManager
+from sync import SyncConfig, SyncManager
 
 
 def main() -> None:
@@ -40,8 +40,18 @@ def main() -> None:
 
 
 async def _async_main(use_auto_oauth: bool = True) -> None:
-    sync_manager = SyncManager(use_auto_oauth=use_auto_oauth)
-    await sync_manager.run()
+    sync_config = SyncConfig(
+        google_credentials_file=config.google_credentials_file,
+        google_token_file=config.google_token_file,
+        google_use_auto_oauth=use_auto_oauth,
+        yandex_token=config.yandex_token,
+    )
+
+    sync_manager = SyncManager(sync_config)
+    await sync_manager.run(
+        google_folder_id=config.google_folder_id,
+        yandex_folder=config.yandex_folder,
+    )
 
 
 if __name__ == "__main__":

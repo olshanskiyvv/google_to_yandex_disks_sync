@@ -2,19 +2,16 @@ from typing import Any, AsyncIterator
 
 import yadisk
 
-from config import config
 from logger import logger
 
 
 class YandexDiskClient:
-    def __init__(self):
+    def __init__(self, token: str):
+        self.token = token
         self.client: yadisk.AsyncClient | None = None
 
     async def __aenter__(self) -> "YandexDiskClient":
-        if not config.yandex_token:
-            raise ValueError("YANDEX_TOKEN не указан в .env")
-
-        self.client = yadisk.AsyncClient(token=config.yandex_token)
+        self.client = yadisk.AsyncClient(token=self.token)
         return self
 
     async def __aexit__(self, *args: Any) -> None:

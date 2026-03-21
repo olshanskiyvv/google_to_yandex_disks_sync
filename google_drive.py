@@ -6,7 +6,6 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from config import config
 from logger import logger
 from oauth_callback_server import OAuthServer
 
@@ -15,7 +14,14 @@ GOOGLE_API_BASE = "https://www.googleapis.com/drive/v3"
 
 
 class GoogleDriveClient:
-    def __init__(self, use_auto_oauth: bool = True):
+    def __init__(
+        self,
+        credentials_file: str = "credentials.json",
+        token_file: str = "token.json",
+        use_auto_oauth: bool = True,
+    ):
+        self.credentials_file = credentials_file
+        self.token_file = token_file
         self.use_auto_oauth = use_auto_oauth
         self.http_client: httpx.AsyncClient | None = None
         self.client_id: str | None = None
@@ -46,7 +52,7 @@ class GoogleDriveClient:
         logger.info("Успешная авторизация в Google Drive")
 
     def _load_credentials(self) -> None:
-        creds_path = Path(config.google_credentials_file)
+        creds_path = Path(self.credentials_file)
         if not creds_path.exists():
             raise FileNotFoundError(f"Файл credentials не найден: {creds_path}")
 
@@ -63,7 +69,7 @@ class GoogleDriveClient:
             )
 
     async def _try_load_token(self) -> bool:
-        token_path = Path(config.google_token_file)
+        token_path = Path(self.token_file)
         if not token_path.exists():
             return False
 
@@ -199,7 +205,7 @@ class GoogleDriveClient:
         self.refresh_token = data.get("refresh_token")
 
     def _save_token(self) -> None:
-        token_path = Path(config.google_token_file)
+        token_path = Path(self.token_file)
         token_path.write_text(
             json.dumps(
                 {
