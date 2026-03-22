@@ -1,4 +1,5 @@
 .DS_Store
+.idea/
 .env
 token.json
 credentials.json
@@ -7,3 +8,4 @@ __pycache__/
 *.pyc
 .uv/
 uv.lock
+sync_pairs.json

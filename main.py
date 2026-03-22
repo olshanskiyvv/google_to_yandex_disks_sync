@@ -1,18 +1,64 @@
 import argparse
 import asyncio
+import json
+from pathlib import Path
 
 from config import config
 from src import PairStats, SyncConfig, SyncManager, SyncResult
 from src.logger import logger
 
-SYNC_PAIRS: list[tuple[str, str]] = [
-    (config.google_folder, config.yandex_folder)
-]
+DEFAULT_PAIRS_FILE = "sync_pairs.json"
+
+
+def _load_pairs(file_path: str) -> list[tuple[str, str]]:
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Файл не найден: {file_path}")
+
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not isinstance(data, list):
+        raise ValueError("JSON должен содержать массив объектов")
+
+    if not data:
+        raise ValueError("Массив пар пуст")
+
+    pairs: list[tuple[str, str]] = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"Элемент {i + 1} должен быть объектом")
+
+        if "google" not in item or not isinstance(item["google"], str): # type: ignore
+            raise ValueError(f"Элемент {i + 1} должен содержать ключ 'google' со строковым значением")
+        if "yandex" not in item or not isinstance(item["yandex"], str): # type: ignore
+            raise ValueError(f"Элемент {i + 1} должен содержать ключ 'yandex' со строковым значением")
+
+        google, yandex = item["google"], item["yandex"] # type: ignore
+
+        if not isinstance(google, str):
+            raise ValueError(
+                f"Элемент {i + 1}: ключ 'google' должен быть строкой"
+            )
+        if not isinstance(yandex, str):
+            raise ValueError(
+                f"Элемент {i + 1}: ключ 'yandex' должен быть строкой"
+            )
+
+        pairs.append((google, yandex))
+
+    return pairs
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Синхронизация Google Drive → Яндекс Диск (через .env)"
+        description="Синхронизация Google Drive → Яндекс Диск (через JSON файл)"
+    )
+    parser.add_argument(
+        "pairs_file",
+        nargs="?",
+        default=DEFAULT_PAIRS_FILE,
+        help=f"Путь к JSON файлу с парами (по умолчанию: {DEFAULT_PAIRS_FILE})",
     )
     parser.add_argument(
         "--manual-oauth",
@@ -25,13 +71,26 @@ def main() -> None:
     if errors:
         for error in errors:
             logger.error(error)
-        logger.error(
-            "Заполните .env или используйте cli.py для передачи аргументов"
-        )
+        logger.error("Заполните .env")
         return
 
     try:
-        asyncio.run(_async_main(use_auto_oauth=not args.manual_oauth))
+        pairs = _load_pairs(args.pairs_file)
+        logger.info(f"Загружено {len(pairs)} пар из {args.pairs_file}")
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        return
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка парсинга JSON: {e}")
+        return
+    except ValueError as e:
+        logger.error(str(e))
+        return
+
+    try:
+        asyncio.run(
+            _async_main(pairs=pairs, use_auto_oauth=not args.manual_oauth)
+        )
     except FileNotFoundError as e:
         logger.error(f"Файл не найден: {e}")
     except ValueError as e:
@@ -43,7 +102,9 @@ def main() -> None:
         raise
 
 
-async def _async_main(use_auto_oauth: bool = True) -> None:
+async def _async_main(
+        pairs: list[tuple[str, str]], use_auto_oauth: bool = True
+) -> None:
     sync_config = SyncConfig(
         google_credentials_file=config.google_credentials_file,
         google_token_file=config.google_token_file,
@@ -51,18 +112,12 @@ async def _async_main(use_auto_oauth: bool = True) -> None:
         yandex_token=config.yandex_token,
     )
 
-    if not SYNC_PAIRS:
-        logger.error(
-            "Нет пар для синхронизации. Заполните SYNC_PAIRS или .env"
-        )
-        return
-
     sync_manager = SyncManager(sync_config)
     results: list[SyncResult] = []
 
-    for i, (google_folder, yandex_folder) in enumerate(SYNC_PAIRS, 1):
+    for i, (google_folder, yandex_folder) in enumerate(pairs, 1):
         logger.info("=" * 60)
-        logger.info(f"[{i}/{len(SYNC_PAIRS)}] Обработка пары")
+        logger.info(f"[{i}/{len(pairs)}] Обработка пары")
         logger.info("=" * 60)
 
         result = await sync_manager.sync(
