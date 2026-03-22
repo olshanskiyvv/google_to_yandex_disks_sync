@@ -1,22 +1,14 @@
 import asyncio
-from dataclasses import dataclass
 from typing import Any
 
 from src.google_drive import GoogleDriveClient
 from src.logger import logger
+from src.models import PairStats, SyncConfig, SyncResult
 from src.url_parser import parse_google_folder_url, parse_yandex_folder_url
 from src.yandex_disk import YandexDiskClient
 
 MAX_RETRIES = 2
 RETRY_DELAY = 5
-
-
-@dataclass
-class SyncConfig:
-    google_credentials_file: str
-    google_token_file: str
-    google_use_auto_oauth: bool
-    yandex_token: str
 
 
 class SyncManager:
@@ -34,47 +26,93 @@ class SyncManager:
         self.stats_lock = asyncio.Lock()
         self._yandex_folder: str = ""
 
-    async def sync(self, google_folder: str, yandex_folder: str) -> None:
+    def _reset_stats(self) -> None:
+        self.stats = {
+            "downloaded": 0,
+            "updated": 0,
+            "skipped": 0,
+            "errors": 0,
+        }
+
+    async def sync(self, google_folder: str, yandex_folder: str) -> SyncResult:
         """
         Синхронизация папок.
 
         Args:
             google_folder: URL папки Google Drive или ID папки
             yandex_folder: URL папки Яндекс Диск или путь к папке
+
+        Returns:
+            SyncResult с результатами синхронизации
         """
-        logger.info("=== Начало синхронизации ===")
+        self._reset_stats()
+        pair_stats = PairStats()
 
-        google_folder_id = parse_google_folder_url(google_folder)
-        yandex_folder_path = parse_yandex_folder_url(yandex_folder)
+        logger.info("Валидация аргументов")
+        logger.info(f"  Переданный Google: {google_folder}")
+        logger.info(f"  Переданный Яндекс: {yandex_folder}")
 
+        try:
+            google_folder_id = parse_google_folder_url(google_folder)
+            yandex_folder_path = parse_yandex_folder_url(yandex_folder)
+        except Exception as e:
+            error_msg = f"Ошибка парсинга аргументов: {e}"
+            logger.error(error_msg)
+            pair_stats.status = "error"
+            return SyncResult(pair_stats=pair_stats, error=error_msg)
+
+        logger.info(f"  Итоговый Google ID: {google_folder_id}")
+        logger.info(f"  Итоговый Яндекс путь: {yandex_folder_path}")
+
+        pair_stats.google_id = google_folder_id
+        pair_stats.yandex_path = yandex_folder_path
         self._yandex_folder = yandex_folder_path
 
-        async with (
-            GoogleDriveClient(
-                credentials_file=self.config.google_credentials_file,
-                token_file=self.config.google_token_file,
-                use_auto_oauth=self.config.google_use_auto_oauth,
-            ) as google,
-            YandexDiskClient(token=self.config.yandex_token) as yandex,
-        ):
-            self.google_client = google
-            self.yandex_client = yandex
+        logger.info("=== Начало синхронизации ===")
 
-            await self.google_client.authenticate()
-            await self.yandex_client.authenticate()
+        try:
+            async with (
+                GoogleDriveClient(
+                    credentials_file=self.config.google_credentials_file,
+                    token_file=self.config.google_token_file,
+                    use_auto_oauth=self.config.google_use_auto_oauth,
+                ) as google,
+                YandexDiskClient(token=self.config.yandex_token) as yandex,
+            ):
+                self.google_client = google
+                self.yandex_client = yandex
 
-            await self.yandex_client.ensure_folder_exists(yandex_folder_path)
+                await self.google_client.authenticate()
+                await self.yandex_client.authenticate()
 
-            google_files = await self.google_client.list_files(google_folder_id)
-            yandex_files = await self.yandex_client.list_files(yandex_folder_path)
+                await self.yandex_client.ensure_folder_exists(yandex_folder_path)
 
-            tasks = [
-                self._sync_file_limited(g_file, yandex_files) for g_file in google_files
-            ]
+                google_files = await self.google_client.list_files(google_folder_id)
+                yandex_files = await self.yandex_client.list_files(yandex_folder_path)
 
-            await asyncio.gather(*tasks, return_exceptions=True)
+                tasks = [
+                    self._sync_file_limited(g_file, yandex_files)
+                    for g_file in google_files
+                ]
+
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = f"{error_type}: {e}"
+            logger.error(f"Ошибка синхронизации: {error_msg}")
+            pair_stats.status = "error"
+            return SyncResult(pair_stats=pair_stats, error=error_msg)
+
+        pair_stats.downloaded = self.stats["downloaded"]
+        pair_stats.updated = self.stats["updated"]
+        pair_stats.skipped = self.stats["skipped"]
+        pair_stats.errors = self.stats["errors"]
+        pair_stats.status = "success"
 
         self._print_stats()
+
+        return SyncResult(pair_stats=pair_stats)
 
     async def _sync_file_limited(
         self, g_file: dict[str, Any], yandex_files: dict[str, dict[str, Any]]
