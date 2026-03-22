@@ -8,12 +8,12 @@ from src.logger import logger
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Синхронизация Google Drive → Яндекс Диск"
+        description="Синхронизация Google Drive → Яндекс Диск (через .env)"
     )
     parser.add_argument(
         "--manual-oauth",
         action="store_true",
-        help="Использовать ручной ввод кода авторизации Google (по умолчанию: автоматический)",
+        help="Ручной ввод кода авторизации Google",
     )
     args = parser.parse_args()
 
@@ -21,9 +21,7 @@ def main() -> None:
     if errors:
         for error in errors:
             logger.error(error)
-        logger.error(
-            "Создайте .env файл на основе .env.example и заполните необходимые поля"
-        )
+        logger.error("Заполните .env или используйте cli.py для передачи аргументов")
         return
 
     try:

@@ -108,6 +108,8 @@ LOG_LEVEL=INFO
 
 ## Запуск
 
+### Через .env (для cron)
+
 ```bash
 # Автоматическая авторизация (по умолчанию)
 uv run python main.py
@@ -116,13 +118,33 @@ uv run python main.py
 uv run python main.py --manual-oauth
 ```
 
+### Через CLI (для скриптов)
+
+```bash
+# Два позиционных аргумента
+uv run python cli.py "https://drive.google.com/drive/folders/xxx" "/backup/videos"
+
+# Именованные аргументы
+uv run python cli.py --google-folder "1ABC123xyz" --yandex-folder "/backup/videos"
+
+# Комбинированный вариант
+uv run python cli.py "google_folder" --yandex-folder "/backup/videos"
+uv run python cli.py --google-folder "google_folder" "yandex_folder"
+
+# С ручной авторизацией
+uv run python cli.py "google" "yandex" --manual-oauth
+```
+
 При первом запуске автоматически откроется браузер для авторизации в Google. После успешной авторизации браузер покажет страницу с сообщением об успехе, а токен сохранится в `token.json`.
 
 ### CLI аргументы
 
 | Аргумент | Описание |
 |----------|----------|
-| `--manual-oauth` | Использовать ручной ввод кода авторизации Google вместо автоматического открытия браузера |
+| `GOOGLE_FOLDER YANDEX_FOLDER` | Позиционные аргументы (оба обязательны) |
+| `-g`, `--google-folder` | URL или ID папки Google Drive |
+| `-y`, `--yandex-folder` | URL или путь к папке Яндекс Диск |
+| `--manual-oauth` | Ручной ввод кода авторизации Google |
 
 ## Как работает скрипт
 
@@ -173,7 +195,8 @@ crontab -e
 
 ```
 disks_sync/
-├── main.py                   # Точка входа
+├── main.py                   # Точка входа (.env режим)
+├── cli.py                    # Точка входа (CLI режим)
 ├── config.py                 # Загрузка настроек
 ├── pyproject.toml            # Зависимости
 ├── .env                      # Настройки (не коммитить)
