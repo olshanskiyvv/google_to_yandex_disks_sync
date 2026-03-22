@@ -2,10 +2,10 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
-from google_drive import GoogleDriveClient
-from logger import logger
-from url_parser import parse_google_folder_url, parse_yandex_folder_url
-from yandex_disk import YandexDiskClient
+from src.google_drive import GoogleDriveClient
+from src.logger import logger
+from src.url_parser import parse_google_folder_url, parse_yandex_folder_url
+from src.yandex_disk import YandexDiskClient
 
 MAX_RETRIES = 2
 RETRY_DELAY = 5

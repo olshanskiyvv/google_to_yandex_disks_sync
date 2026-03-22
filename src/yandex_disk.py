@@ -2,7 +2,7 @@ from typing import Any, AsyncIterator
 
 import yadisk
 
-from logger import logger
+from src.logger import logger
 
 
 class YandexDiskClient:

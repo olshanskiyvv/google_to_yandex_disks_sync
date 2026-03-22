@@ -175,16 +175,19 @@ crontab -e
 disks_sync/
 ├── main.py                   # Точка входа
 ├── config.py                 # Загрузка настроек
-├── sync.py                   # Логика синхронизации
-├── google_drive.py           # Google Drive API клиент
-├── yandex_disk.py            # Яндекс Диск API клиент
-├── oauth_callback_server.py  # OAuth callback сервер
-├── url_parser.py             # Парсинг ссылок
-├── logger.py                 # Настройка логирования
 ├── pyproject.toml            # Зависимости
 ├── .env                      # Настройки (не коммитить)
 ├── .env.example              # Пример настроек
 ├── credentials.json          # Google credentials (не коммитить)
 ├── token.json                # Google токен (не коммитить)
-└── sync.log                  # Логи (не коммитить)
+├── sync.log                  # Логи (не коммитить)
+│
+└── src/
+    ├── __init__.py           # Экспорт SyncManager, SyncConfig
+    ├── sync.py               # Логика синхронизации
+    ├── google_drive.py       # Google Drive API клиент
+    ├── yandex_disk.py        # Яндекс Диск API клиент
+    ├── oauth_callback_server.py  # OAuth callback сервер
+    ├── url_parser.py         # Парсинг ссылок
+    └── logger.py             # Настройка логирования
 ```

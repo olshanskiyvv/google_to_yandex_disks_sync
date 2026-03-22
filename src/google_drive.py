@@ -6,8 +6,8 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from logger import logger
-from oauth_callback_server import OAuthServer
+from src.logger import logger
+from src.oauth_callback_server import OAuthServer
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 GOOGLE_API_BASE = "https://www.googleapis.com/drive/v3"

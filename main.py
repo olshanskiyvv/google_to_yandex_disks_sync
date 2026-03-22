@@ -2,8 +2,8 @@ import argparse
 import asyncio
 
 from config import config
-from logger import logger
-from sync import SyncConfig, SyncManager
+from src import SyncConfig, SyncManager
+from src.logger import logger
 
 
 def main() -> None:
