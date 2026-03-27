@@ -16,7 +16,7 @@ class SyncManager:
         self.config = config
         self.google_client: GoogleDriveClient | None = None
         self.yandex_client: YandexDiskClient | None = None
-        self.semaphore = asyncio.Semaphore(5)
+        self.semaphore = asyncio.Semaphore(3)
         self.stats = {
             "downloaded": 0,
             "updated": 0,
@@ -85,10 +85,16 @@ class SyncManager:
                 await self.google_client.authenticate()
                 await self.yandex_client.authenticate()
 
-                await self.yandex_client.ensure_folder_exists(yandex_folder_path)
+                await self.yandex_client.ensure_folder_exists(
+                    yandex_folder_path
+                )
 
-                google_files = await self.google_client.list_files(google_folder_id)
-                yandex_files = await self.yandex_client.list_files(yandex_folder_path)
+                google_files = await self.google_client.list_files(
+                    google_folder_id
+                )
+                yandex_files = await self.yandex_client.list_files(
+                    yandex_folder_path
+                )
 
                 tasks = [
                     self._sync_file_limited(g_file, yandex_files)
@@ -164,7 +170,9 @@ class SyncManager:
         for attempt in range(MAX_RETRIES):
             try:
                 await self.yandex_client.ensure_parent_folders(remote_path)
-                stream = self.google_client.download_stream(g_file["id"], file_path)
+                stream = self.google_client.download_stream(
+                    g_file["id"], file_path
+                )
                 await self.yandex_client.upload_stream(
                     stream, remote_path, overwrite=is_update
                 )
@@ -186,7 +194,9 @@ class SyncManager:
                 )
 
                 if await self._check_file_uploaded(remote_path):
-                    logger.warning(f"Файл загружен несмотря на ошибку: {file_path}")
+                    logger.warning(
+                        f"Файл загружен несмотря на ошибку: {file_path}"
+                    )
                     return True
 
                 return False
