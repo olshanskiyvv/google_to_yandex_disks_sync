@@ -1,0 +1,5 @@
+SCRIPT_DIR=$(dirname "$0")
+cd $SCRIPT_DIR
+uv_path=path/to/uv
+main_path=/absolute/path/to/main.py
+$uv_path run $main_path
