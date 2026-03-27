@@ -9,3 +9,4 @@ __pycache__/
 .uv/
 uv.lock
 sync_pairs.json
+run_sync.sh
