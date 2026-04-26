@@ -1,6 +1,6 @@
 # Disks Sync
 
-Синхронизация файлов с Google Drive на Яндекс Диск.
+Синхронизация файлов между хранилищами: Google Drive, Яндекс Диск, локальная файловая система.
 
 ## Установка
 
@@ -10,28 +10,101 @@
 uv sync
 ```
 
+## Быстрый старт
+
+```bash
+# 1. Создайте config.yaml (见 пример ниже)
+# 2. Создайте auth.yaml с токенами или экспортируйте ENV переменные
+# 3. Запустите синхронизацию
+uv run python cli.py
+```
+
 ## Настройка
 
-### 1. Google Drive API
+### config.yaml
+
+Основной файл конфигурации:
+
+```yaml
+backends:
+  google:
+    credentials_file: "credentials.json"
+    token_file: "token.json"
+    use_auto_oauth: true
+
+  yandex:
+    timeout: 30
+
+  local:
+    root: "/mnt/backup"
+
+folders:
+  photos_google:
+    backend: google
+    path: "Backups/Photos"
+
+  photos_yandex:
+    backend: yandex
+    path: "MyBackup/Photos"
+
+  docs_local:
+    backend: local
+    path: "/documents"
+
+sync_pairs:
+  - source: photos_google
+    target: photos_yandex
+
+logging:
+  file: "sync.log"
+  level: "INFO"
+```
+
+### Авторизация
+
+#### Вариант 1: auth.yaml (приоритетнее)
+
+Создайте `auth.yaml` для секретных данных:
+
+```yaml
+yandex:
+  token: "y0_xxxxx"
+
+google:
+  credentials_file: "/path/to/credentials.json"
+  token_file: "/path/to/token.json"
+```
+
+#### Вариант 2: ENV переменные
+
+Экспортируйте переменные перед запуском:
+
+```bash
+export YANDEX_TOKEN="y0_xxxxx"
+export GOOGLE_CREDENTIALS="/path/to/credentials.json"
+export GOOGLE_TOKEN="/path/to/token.json"
+```
+
+#### Вариант 3: ${ENV_VAR} в config.yaml
+
+```yaml
+yandex:
+  token: ${YANDEX_TOKEN}
+```
+
+### Получение токенов
+
+#### Google Drive API
 
 1. Перейдите в [Google Cloud Console](https://console.cloud.google.com)
 2. Создайте новый проект или выберите существующий
-3. Включите **Google Drive API**:
-   - Меню → APIs & Services → Library
-   - Найдите "Google Drive API" → Enable
+3. Включите **Google Drive API**
 4. Создайте credentials:
    - APIs & Services → Credentials → Create Credentials → OAuth client ID
    - Application type: Desktop app
-   - Скачайте JSON-файл и сохраните как `credentials.json` в папке проекта
-5. Получите ID папки с видео:
-   - Откройте папку на Google Drive
-   - URL имеет вид `https://drive.google.com/drive/folders/FOLDER_ID`
-   - Скопируйте `FOLDER_ID`
-   - Если папка чужая — нажмите "Добавить на Мой диск"
+   - Скачайте JSON-файл и сохраните как `credentials.json`
 
-### 2. Яндекс Диск
-
-Получите OAuth токен:
+#### Яндекс Диск
 
 1. Перейдите по ссылке:
    ```
@@ -40,177 +113,115 @@ uv sync
 2. Разрешите доступ
 3. Скопируйте токен из URL после `access_token=`
 
-### 3. Конфигурация
-
-Создайте файл `.env` на основе `.env.example`:
-
-```bash
-cp .env.example .env
-```
-
-Заполните параметры:
-
-```env
-# Google Drive
-GOOGLE_CREDENTIALS_FILE=credentials.json
-GOOGLE_TOKEN_FILE=token.json
-
-# Google folder (URL или ID папки)
-GOOGLE_FOLDER=1ABC123xyz...
-
-# Яндекс Диск
-YANDEX_TOKEN=AQAAA...
-
-# Яндекс folder (URL или путь к папке)
-YANDEX_FOLDER=/backup/videos
-
-# Логирование
-LOG_FILE=sync.log
-LOG_LEVEL=INFO
-```
-
-### 4. Указание папок для синхронизации
-
-#### Google Drive
-
-Параметр `GOOGLE_FOLDER` принимает:
-
-1. **ID папки**:
-   ```env
-   GOOGLE_FOLDER=1ABC123xyz...
-   ```
-   ID можно найти в URL папки: `https://drive.google.com/drive/folders/1ABC123xyz...`
-
-2. **Ссылку на папку**:
-   ```env
-   GOOGLE_FOLDER=https://drive.google.com/drive/folders/1ABC123xyz...
-   ```
-   Поддерживаемые форматы ссылок:
-   - `https://drive.google.com/drive/folders/{id}`
-   - `https://drive.google.com/drive/u/0/folders/{id}` (с номером аккаунта)
-   - `https://drive.google.com/open?id={id}`
-
-#### Яндекс Диск
-
-Параметр `YANDEX_FOLDER` принимает:
-
-1. **Путь к папке**:
-   ```env
-   YANDEX_FOLDER=/backup/videos
-   ```
-   Путь указывается с обычными пробелами (без URL-кодирования).
-
-2. **Ссылку на папку**:
-   ```env
-   YANDEX_FOLDER=https://disk.yandex.ru/client/disk/backup/videos
-   ```
-   Ссылка должна быть персональной (открывается при переходе к папке в браузере).
-
 ## Запуск
 
-### Через .env (для cron)
-
 ```bash
-# Автоматическая авторизация (по умолчанию)
-uv run python main.py
+# Запустить все sync_pairs из config.yaml
+uv run python cli.py
 
-# Ручной ввод кода авторизации Google
-uv run python main.py --manual-oauth
+# Использовать альтернативный config
+uv run python cli.py --config production.yaml
+
+# Запустить только первую пару
+uv run python cli.py --pair 0
+
+# Запустить несколько пар
+uv run python cli.py --pair 0 --pair 2
 ```
 
-### Через CLI (для скриптов)
+При первом запуске Google автоматически откроется браузер для авторизации.
 
-```bash
-# Два позиционных аргумента
-uv run python cli.py "https://drive.google.com/drive/folders/xxx" "/backup/videos"
-
-# Именованные аргументы
-uv run python cli.py --google-folder "1ABC123xyz" --yandex-folder "/backup/videos"
-
-# Комбинированный вариант
-uv run python cli.py "google_folder" --yandex-folder "/backup/videos"
-uv run python cli.py --google-folder "google_folder" "yandex_folder"
-
-# С ручной авторизацией
-uv run python cli.py "google" "yandex" --manual-oauth
-```
-
-При первом запуске автоматически откроется браузер для авторизации в Google. После успешной авторизации браузер покажет страницу с сообщением об успехе, а токен сохранится в `token.json`.
-
-### CLI аргументы
+## CLI аргументы
 
 | Аргумент | Описание |
 |----------|----------|
-| `GOOGLE_FOLDER YANDEX_FOLDER` | Позиционные аргументы (оба обязательны) |
-| `-g`, `--google-folder` | URL или ID папки Google Drive |
-| `-y`, `--yandex-folder` | URL или путь к папке Яндекс Диск |
-| `--manual-oauth` | Ручной ввод кода авторизации Google |
+| `-c`, `--config` | Путь к config.yaml (по умолчанию: config.yaml) |
+| `-p`, `--pair` | Индекс пары для синхронизации (можно указать несколько) |
 
-## Как работает скрипт
+## Как работает
 
-1. Получает список файлов из указанной папки Google Drive (рекурсивно, включая вложенные папки)
-2. Получает список файлов из папки на Яндекс Диск
-3. Для каждого файла:
-   - Если файла нет на Яндекс Диск → скачивает и загружает
-   - Если файл есть и версия на Google новее → перезаписывает
-   - Если файл актуален → пропускает
-4. Загружает до 5 файлов параллельно
-5. Выводит отчёт о синхронизации
+1. Для каждой sync_pair:
+   - Получает список файлов из source папки
+   - Получает список файлов из target папки
+   - Для каждого файла:
+     - Если файла нет в target → скачивает и загружает
+     - Если файл есть и версия новее → перезаписывает
+     - Если файл актуален → пропускает
+2. Загружает до 3 файлов параллельно
+3. Выводит отчёт о синхронизации
 
 ## Логи
 
 Логи записываются в файл `sync.log` и выводятся в консоль.
 
-Уровень логирования настраивается через `LOG_LEVEL`:
+Уровень логирования настраивается через `logging.level` в config.yaml:
 - `DEBUG` — подробная информация
 - `INFO` — основной процесс
 - `WARNING` — предупреждения
 - `ERROR` — ошибки
 
-## Автоматизация
+## Добавление нового хранилища
 
-### Cron (Linux/macOS)
+1. Создайте `src/backends/<name>.py` с классами:
+   - `Authenticator` — авторизация
+   - `Reader` (опционально) — скачивание файлов
+   - `Writer` (опционально) — загрузка файлов
+   - `<Name>Backend` — объединяет всё в `StorageBackend`
+   - `<Name>BackendFactory` — фабрика с `@register_backend("name")`
 
-Запуск каждое воскресенье в 10:00:
+2. Зарегистрируйте в `src/backends/__init__.py`
+
+3. Добавьте в config.yaml:
+
+```yaml
+backends:
+  mybackend:
+    api_key: ${MY_API_KEY}
+
+folders:
+  my_data:
+    backend: mybackend
+    path: "/data"
+
+sync_pairs:
+  - source: my_data
+    target: photos_yandex
+```
+
+## Структура проекта
+
+```
+disks_sync/
+├── config.yaml              # Конфигурация хранилищ и синхронизации
+├── auth.yaml                # Секреты (не коммитить)
+├── cli.py                   # Точка входа
+├── pyproject.toml           # Зависимости
+│
+└── src/
+    ├── __init__.py          # Экспорт основных классов
+    ├── protocols.py         # Интерфейсы: Authenticator, Reader, Writer, StorageBackend
+    ├── factories.py         # BackendRegistry, @register_backend
+    ├── sync.py              # SyncManager — логика синхронизации
+    ├── models.py            # SyncStats, PairStats, SyncResult
+    ├── logger.py            # Логирование
+    │
+    ├── google_drive.py      # Google Drive API клиент
+    ├── yandex_disk.py      # Яндекс Диск API клиент
+    ├── oauth_callback_server.py  # OAuth callback сервер
+    │
+    └── backends/
+        ├── __init__.py      # Экспорт фабрик
+        ├── google.py        # Google Drive backend
+        ├── yandex.py        # Yandex Disk backend
+        └── local.py         # Local filesystem backend
+```
+
+## Cron
 
 ```bash
 crontab -e
 ```
 
 ```
-0 10 * * 0 cd /path/to/disks_sync && /path/to/uv run python main.py
-```
-
-### Windows Task Scheduler
-
-1. Откройте Task Scheduler
-2. Create Basic Task
-3. Trigger: Weekly
-4. Action: Start program
-   - Program: `path\to\uv.exe`
-   - Arguments: `run python main.py`
-   - Start in: `path\to\disks_sync`
-
-## Структура проекта
-
-```
-disks_sync/
-├── main.py                   # Точка входа (.env режим)
-├── cli.py                    # Точка входа (CLI режим)
-├── config.py                 # Загрузка настроек
-├── pyproject.toml            # Зависимости
-├── .env                      # Настройки (не коммитить)
-├── .env.example              # Пример настроек
-├── credentials.json          # Google credentials (не коммитить)
-├── token.json                # Google токен (не коммитить)
-├── sync.log                  # Логи (не коммитить)
-│
-└── src/
-    ├── __init__.py           # Экспорт SyncManager, SyncConfig
-    ├── sync.py               # Логика синхронизации
-    ├── google_drive.py       # Google Drive API клиент
-    ├── yandex_disk.py        # Яндекс Диск API клиент
-    ├── oauth_callback_server.py  # OAuth callback сервер
-    ├── url_parser.py         # Парсинг ссылок
-    └── logger.py             # Настройка логирования
+0 10 * * * cd /path/to/disks_sync && /path/to/uv run python cli.py
 ```

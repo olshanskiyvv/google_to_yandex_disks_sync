@@ -1,135 +1,115 @@
 import argparse
 import asyncio
-import json
-from pathlib import Path
+import sys
 
-from config import config
-from src import PairStats, SyncConfig, SyncManager, SyncResult
+from config import load_config
+from src.factories import get_registry
 from src.logger import logger
-
-DEFAULT_PAIRS_FILE = "sync_pairs.json"
-
-
-def _load_pairs(file_path: str) -> list[tuple[str, str]]:
-    path = Path(file_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Файл не найден: {file_path}")
-
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-
-    if not isinstance(data, list):
-        raise ValueError("JSON должен содержать массив объектов")
-
-    if not data:
-        raise ValueError("Массив пар пуст")
-
-    pairs: list[tuple[str, str]] = []
-    for i, item in enumerate(data):
-        if not isinstance(item, dict):
-            raise ValueError(f"Элемент {i + 1} должен быть объектом")
-
-        if "google" not in item or not isinstance(item["google"], str): # type: ignore
-            raise ValueError(f"Элемент {i + 1} должен содержать ключ 'google' со строковым значением")
-        if "yandex" not in item or not isinstance(item["yandex"], str): # type: ignore
-            raise ValueError(f"Элемент {i + 1} должен содержать ключ 'yandex' со строковым значением")
-
-        google, yandex = item["google"], item["yandex"] # type: ignore
-
-        if not isinstance(google, str):
-            raise ValueError(
-                f"Элемент {i + 1}: ключ 'google' должен быть строкой"
-            )
-        if not isinstance(yandex, str):
-            raise ValueError(
-                f"Элемент {i + 1}: ключ 'yandex' должен быть строкой"
-            )
-
-        pairs.append((google, yandex))
-
-    return pairs
+from src.sync import SyncManager
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Синхронизация Google Drive → Яндекс Диск (через JSON файл)"
+        description="Синхронизация между хранилищами"
     )
     parser.add_argument(
-        "pairs_file",
-        nargs="?",
-        default=DEFAULT_PAIRS_FILE,
-        help=f"Путь к JSON файлу с парами (по умолчанию: {DEFAULT_PAIRS_FILE})",
+        "-c",
+        "--config",
+        default="config.yaml",
+        help="Путь к config.yaml (по умолчанию: config.yaml)",
     )
     parser.add_argument(
-        "--manual-oauth",
-        action="store_true",
-        help="Ручной ввод кода авторизации Google",
+        "-p",
+        "--pair",
+        type=int,
+        action="append",
+        dest="pairs",
+        help="Индекс пары для синхронизации (можно указать несколько)",
     )
+
     args = parser.parse_args()
 
-    errors = config.validate()
-    if errors:
-        for error in errors:
-            logger.error(error)
-        logger.error("Заполните .env")
-        return
-
     try:
-        pairs = _load_pairs(args.pairs_file)
-        logger.info(f"Загружено {len(pairs)} пар из {args.pairs_file}")
+        app_config = load_config(args.config)
     except FileNotFoundError as e:
-        logger.error(str(e))
-        return
-    except json.JSONDecodeError as e:
-        logger.error(f"Ошибка парсинга JSON: {e}")
-        return
-    except ValueError as e:
-        logger.error(str(e))
-        return
-
-    try:
-        asyncio.run(
-            _async_main(pairs=pairs, use_auto_oauth=not args.manual_oauth)
-        )
-    except FileNotFoundError as e:
-        logger.error(f"Файл не найден: {e}")
+        logger.error(f"Конфигурация не найдена: {e}")
+        sys.exit(1)
     except ValueError as e:
         logger.error(f"Ошибка конфигурации: {e}")
+        sys.exit(1)
+
+    try:
+        asyncio.run(_async_main(app_config, args))
     except KeyboardInterrupt:
         logger.info("Синхронизация прервана пользователем")
+        sys.exit(0)
     except Exception as e:
         logger.error(f"Неожиданная ошибка: {e}")
         raise
 
 
-async def _async_main(
-        pairs: list[tuple[str, str]], use_auto_oauth: bool = True
-) -> None:
-    sync_config = SyncConfig(
-        google_credentials_file=config.google_credentials_file,
-        google_token_file=config.google_token_file,
-        google_use_auto_oauth=use_auto_oauth,
-        yandex_token=config.yandex_token,
-    )
+async def _async_main(app_config, args) -> None:
+    # Регистрируем бэкенды
+    from src.backends import google, local, yandex  # noqa: F401
 
-    sync_manager = SyncManager(sync_config)
-    results: list[SyncResult] = []
+    registry = get_registry()
 
-    for i, (google_folder, yandex_folder) in enumerate(pairs, 1):
-        logger.info("=" * 60)
-        logger.info(f"[{i}/{len(pairs)}] Обработка пары")
-        logger.info("=" * 60)
+    # Выбираем пары для синхронизации
+    pairs_to_run = args.pairs if args.pairs is not None else range(len(app_config.sync_pairs))
 
-        result = await sync_manager.sync(
-            google_folder=google_folder,
-            yandex_folder=yandex_folder,
-        )
-        results.append(result)
+    results = []
+
+    for pair_index in pairs_to_run:
+        if pair_index >= len(app_config.sync_pairs):
+            logger.error(f"Пара {pair_index} не существует (всего {len(app_config.sync_pairs)})")
+            continue
+
+        pair = app_config.sync_pairs[pair_index]
+        logger.info(f"\n=== Синхронизация пары {pair_index}: {pair.source} -> {pair.target} ===")
+
+        try:
+            source_folder = app_config.folders[pair.source]
+            target_folder = app_config.folders[pair.target]
+        except KeyError as e:
+            logger.error(f"Папка не найдена: {e}")
+            continue
+
+        source_backend_config = app_config.backends.get(source_folder.backend)
+        target_backend_config = app_config.backends.get(target_folder.backend)
+
+        if not source_backend_config:
+            logger.error(f"Бэкенд '{source_folder.backend}' не найден в конфигурации")
+            continue
+        if not target_backend_config:
+            logger.error(f"Бэкенд '{target_folder.backend}' не найден в конфигурации")
+            continue
+
+        factory = registry.get_factory(source_folder.backend)
+        if not factory:
+            logger.error(f"Неизвестный бэкенд: {source_folder.backend}")
+            continue
+
+        source_backend = factory.from_namespace(source_backend_config)
+        target_backend = registry.get_factory(target_folder.backend).from_namespace(target_backend_config)
+
+        async with source_backend, target_backend:
+            await source_backend.authenticator.authenticate()
+            await target_backend.authenticator.authenticate()
+
+            sync_manager = SyncManager(source=source_backend, destination=target_backend)
+            result = await sync_manager.sync(
+                source_folder=source_folder.path,
+                dest_folder=target_folder.path,
+            )
+            results.append(result)
 
     _print_summary(results)
 
 
-def _print_summary(results: list[SyncResult]) -> None:
+def _print_summary(results) -> None:
+    if not results:
+        return
+
     total_downloaded = 0
     total_updated = 0
     total_skipped = 0
@@ -142,9 +122,7 @@ def _print_summary(results: list[SyncResult]) -> None:
     logger.info("=" * 60)
 
     for i, result in enumerate(results, 1):
-        stats: PairStats = result.pair_stats
-        google_id = stats.google_id or "?"
-        yandex_path = stats.yandex_path or "?"
+        stats = result.pair_stats
 
         if result.success:
             status = "✓"
@@ -156,11 +134,11 @@ def _print_summary(results: list[SyncResult]) -> None:
             if stats.skipped:
                 details.append(f"{stats.skipped} пропущено")
             detail_str = ", ".join(details) if details else "нет изменений"
-            line = f"Пара {i}: {google_id} → {yandex_path} | {status} {detail_str}"
+            line = f"Пара {i}: {stats.source_id} → {stats.target_path} | {status} {detail_str}"
         else:
             status = "✗"
             error_msg = result.error or "Неизвестная ошибка"
-            line = f"Пара {i}: {google_id} → {yandex_path} | {status} Ошибка: {error_msg}"
+            line = f"Пара {i}: {stats.source_id} → {stats.target_path} | {status} Ошибка: {error_msg}"
             error_pairs += 1
 
         logger.info(line)

@@ -2,124 +2,57 @@ import argparse
 import asyncio
 import sys
 
-from config import config
-from src import SyncConfig, SyncManager
+from config import load_config
+from src.factories import get_registry
 from src.logger import logger
-
-
-def parse_folders(args) -> tuple[str, str]:
-    """
-    Извлекает и валидирует аргументы папок.
-
-    Returns:
-        tuple[str, str]: (google_folder, yandex_folder)
-
-    Raises:
-        SystemExit: при ошибке валидации
-    """
-    google_folder = None
-    yandex_folder = None
-    google_source = None
-    yandex_source = None
-
-    if args.folders:
-        if len(args.folders) == 1:
-            logger.error("Ошибка: укажите оба позиционных аргумента")
-            logger.error("Пример: cli.py GOOGLE_FOLDER YANDEX_FOLDER")
-            sys.exit(1)
-        if len(args.folders) >= 2:
-            google_folder = args.folders[0]
-            yandex_folder = args.folders[1]
-            google_source = "positional"
-            yandex_source = "positional"
-
-    if args.google_folder:
-        if google_source == "positional":
-            logger.error(
-                "Ошибка: GOOGLE_FOLDER указан дважды (позиционный и --google-folder)"
-            )
-            sys.exit(1)
-        google_folder = args.google_folder
-        google_source = "named"
-
-    if args.yandex_folder:
-        if yandex_source == "positional":
-            logger.error(
-                "Ошибка: YANDEX_FOLDER указан дважды (позиционный и --yandex-folder)"
-            )
-            sys.exit(1)
-        yandex_folder = args.yandex_folder
-        yandex_source = "named"
-
-    if not google_folder:
-        logger.error("Ошибка: GOOGLE_FOLDER не указан")
-        logger.error("Используйте позиционный аргумент или --google-folder")
-        sys.exit(1)
-
-    if not yandex_folder:
-        logger.error("Ошибка: YANDEX_FOLDER не указан")
-        logger.error("Используйте позиционный аргумент или --yandex-folder")
-        sys.exit(1)
-
-    return google_folder, yandex_folder
+from src.sync import SyncManager
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Синхронизация Google Drive → Яндекс Диск",
+        description="Синхронизация между хранилищами",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры:
-  cli.py "https://drive.google.com/drive/folders/xxx" "/backup/videos"
-  cli.py --google-folder "1ABC123xyz" --yandex-folder "/backup/videos"
-  cli.py "google_folder" --yandex-folder "/backup/videos"
-  cli.py --google-folder "google_folder" "yandex_folder"
+  cli.py                           # запустить все sync_pairs из config.yaml
+  cli.py --config custom.yaml       # использовать альтернативный config
+  cli.py --pair 0                  # запустить только первую пару
         """,
     )
 
     parser.add_argument(
-        "folders",
-        nargs="*",
-        metavar="FOLDER",
-        help="GOOGLE_FOLDER YANDEX_FOLDER (позиционные)",
-    )
-
-    parser.add_argument(
-        "-g",
-        "--google-folder",
-        metavar="FOLDER",
-        help="URL или ID папки Google Drive",
+        "-c",
+        "--config",
+        default="config.yaml",
+        help="Путь к config.yaml (по умолчанию: config.yaml)",
     )
     parser.add_argument(
-        "-y",
-        "--yandex-folder",
-        metavar="FOLDER",
-        help="URL или путь к папке Яндекс Диск",
+        "-p",
+        "--pair",
+        type=int,
+        action="append",
+        dest="pairs",
+        help="Индекс пары для синхронизации (можно указать несколько)",
     )
     parser.add_argument(
-        "--manual-oauth",
+        "--dry-run",
         action="store_true",
-        help="Ручной ввод кода авторизации Google",
+        help="Показать что будет синхронизировано без реального запуска",
     )
 
     args = parser.parse_args()
 
-    google_folder, yandex_folder = parse_folders(args)
-
     try:
-        asyncio.run(
-            _async_main(
-                google_folder=google_folder,
-                yandex_folder=yandex_folder,
-                use_auto_oauth=not args.manual_oauth,
-            )
-        )
+        app_config = load_config(args.config)
     except FileNotFoundError as e:
-        logger.error(f"Файл не найден: {e}")
+        logger.error(f"Конфигурация не найдена: {e}")
         sys.exit(1)
     except ValueError as e:
         logger.error(f"Ошибка конфигурации: {e}")
         sys.exit(1)
+
+    try:
+        asyncio.run(_async_main(app_config, args))
     except KeyboardInterrupt:
         logger.info("Синхронизация прервана пользователем")
         sys.exit(0)
@@ -128,23 +61,68 @@ def main() -> None:
         raise
 
 
-async def _async_main(
-    google_folder: str,
-    yandex_folder: str,
-    use_auto_oauth: bool = True,
-) -> None:
-    sync_config = SyncConfig(
-        google_credentials_file=config.google_credentials_file,
-        google_token_file=config.google_token_file,
-        google_use_auto_oauth=use_auto_oauth,
-        yandex_token=config.yandex_token,
-    )
+async def _async_main(app_config, args) -> None:
+    # Регистрируем фабрики бэкендов
+    _register_backends()
 
-    sync_manager = SyncManager(sync_config)
-    await sync_manager.sync(
-        google_folder=google_folder,
-        yandex_folder=yandex_folder,
-    )
+    # Выбираем пары для синхронизации
+    pairs_to_run = args.pairs if args.pairs is not None else range(len(app_config.sync_pairs))
+
+    for pair_index in pairs_to_run:
+        if pair_index >= len(app_config.sync_pairs):
+            logger.error(f"Пара {pair_index} не существует (всего {len(app_config.sync_pairs)})")
+            continue
+
+        pair = app_config.sync_pairs[pair_index]
+        logger.info(f"\n=== Синхронизация пары {pair_index}: {pair.source} -> {pair.target} ===")
+
+        try:
+            source_folder = app_config.folders[pair.source]
+            target_folder = app_config.folders[pair.target]
+        except KeyError as e:
+            logger.error(f"Папка не найдена: {e}")
+            continue
+
+        # Получаем бэкенды
+        source_backend_config = app_config.backends.get(source_folder.backend)
+        target_backend_config = app_config.backends.get(target_folder.backend)
+
+        if not source_backend_config:
+            logger.error(f"Бэкенд '{source_folder.backend}' не найден в конфигурации")
+            continue
+        if not target_backend_config:
+            logger.error(f"Бэкенд '{target_folder.backend}' не найден в конфигурации")
+            continue
+
+        source_backend = _create_backend(source_folder.backend, source_backend_config)
+        target_backend = _create_backend(target_folder.backend, target_backend_config)
+
+        async with source_backend, target_backend:
+            await source_backend.authenticator.authenticate()
+            await target_backend.authenticator.authenticate()
+
+            sync_manager = SyncManager(source=source_backend, destination=target_backend)
+            await sync_manager.sync(
+                source_folder=source_folder.path,
+                dest_folder=target_folder.path,
+            )
+
+
+def _register_backends() -> None:
+    """Register all available backend factories."""
+    # Импорт модулей触发 @register_backend декораторы
+    from src.backends import google, local, yandex  # noqa: F401
+
+
+def _create_backend(name: str, config: dict):
+    """Create a backend instance from configuration."""
+    registry = get_registry()
+    factory = registry.get_factory(name)
+
+    if not factory:
+        raise ValueError(f"Неизвестный бэкенд: {name}")
+
+    return factory.from_namespace(config)
 
 
 if __name__ == "__main__":

@@ -1,107 +1,82 @@
 import asyncio
-from typing import Any
 
-from src.google_drive import GoogleDriveClient
 from src.logger import logger
-from src.models import PairStats, SyncConfig, SyncResult
-from src.url_parser import parse_google_folder_url, parse_yandex_folder_url
-from src.yandex_disk import YandexDiskClient
+from src.models import PairStats, SyncResult, SyncStats
+from src.protocols import FileMetadata, StorageBackend
 
 MAX_RETRIES = 2
 RETRY_DELAY = 5
 
 
+async def _retry(coro_func, max_retries: int, delay: float, label: str = "") -> None:
+    """Повторяет coroutine при ошибке. Выбрасывает исключение после последней попытки."""
+    last_exc: Exception = RuntimeError("no attempts made")
+    for attempt in range(max_retries):
+        try:
+            await coro_func()
+            return
+        except Exception as e:
+            last_exc = e
+            if attempt < max_retries - 1:
+                logger.warning(
+                    f"Ошибка {label}: {type(e).__name__}: {e}, "
+                    f"повторная попытка через {delay}с"
+                )
+                await asyncio.sleep(delay)
+    raise last_exc
+
+
 class SyncManager:
-    def __init__(self, config: SyncConfig):
-        self.config = config
-        self.google_client: GoogleDriveClient | None = None
-        self.yandex_client: YandexDiskClient | None = None
-        self.semaphore = asyncio.Semaphore(3)
-        self.stats = {
-            "downloaded": 0,
-            "updated": 0,
-            "skipped": 0,
-            "errors": 0,
-        }
+    def __init__(
+        self,
+        source: StorageBackend,
+        destination: StorageBackend,
+        semaphore_limit: int = 3,
+    ):
+        if source.reader is None:
+            raise ValueError(f"Source backend '{source.name}' has no reader")
+        if destination.writer is None:
+            raise ValueError(f"Destination backend '{destination.name}' has no writer")
+
+        self.source = source
+        self.destination = destination
+        self.semaphore = asyncio.Semaphore(semaphore_limit)
         self.stats_lock = asyncio.Lock()
-        self._yandex_folder: str = ""
 
-    def _reset_stats(self) -> None:
-        self.stats = {
-            "downloaded": 0,
-            "updated": 0,
-            "skipped": 0,
-            "errors": 0,
-        }
-
-    async def sync(self, google_folder: str, yandex_folder: str) -> SyncResult:
+    async def sync(self, source_folder: str, dest_folder: str) -> SyncResult:
         """
-        Синхронизация папок.
+        Синхронизация папок между хранилищами.
 
         Args:
-            google_folder: URL папки Google Drive или ID папки
-            yandex_folder: URL папки Яндекс Диск или путь к папке
+            source_folder: Папка источник
+            dest_folder: Папка назначения
 
         Returns:
             SyncResult с результатами синхронизации
         """
-        self._reset_stats()
         pair_stats = PairStats()
-
-        logger.info("Валидация аргументов")
-        logger.info(f"  Переданный Google: {google_folder}")
-        logger.info(f"  Переданный Яндекс: {yandex_folder}")
-
-        try:
-            google_folder_id = parse_google_folder_url(google_folder)
-            yandex_folder_path = parse_yandex_folder_url(yandex_folder)
-        except Exception as e:
-            error_msg = f"Ошибка парсинга аргументов: {e}"
-            logger.error(error_msg)
-            pair_stats.status = "error"
-            return SyncResult(pair_stats=pair_stats, error=error_msg)
-
-        logger.info(f"  Итоговый Google ID: {google_folder_id}")
-        logger.info(f"  Итоговый Яндекс путь: {yandex_folder_path}")
-
-        pair_stats.google_id = google_folder_id
-        pair_stats.yandex_path = yandex_folder_path
-        self._yandex_folder = yandex_folder_path
+        pair_stats.source_id = source_folder
+        pair_stats.target_path = dest_folder
 
         logger.info("=== Начало синхронизации ===")
+        logger.info(f"  Источник: {self.source.name}:{source_folder}")
+        logger.info(f"  Назначение: {self.destination.name}:{dest_folder}")
+
+        stats = SyncStats()
 
         try:
-            async with (
-                GoogleDriveClient(
-                    credentials_file=self.config.google_credentials_file,
-                    token_file=self.config.google_token_file,
-                    use_auto_oauth=self.config.google_use_auto_oauth,
-                ) as google,
-                YandexDiskClient(token=self.config.yandex_token) as yandex,
-            ):
-                self.google_client = google
-                self.yandex_client = yandex
+            await self.destination.writer.ensure_folder_exists(dest_folder)
 
-                await self.google_client.authenticate()
-                await self.yandex_client.authenticate()
+            source_files = await self._list_folder(self.source, source_folder)
+            dest_files_list = await self._list_folder(self.destination, dest_folder)
+            dest_files = {f.path: f for f in dest_files_list}
 
-                await self.yandex_client.ensure_folder_exists(
-                    yandex_folder_path
-                )
+            tasks = [
+                self._sync_file_limited(s_file, dest_files, dest_folder, stats)
+                for s_file in source_files
+            ]
 
-                google_files = await self.google_client.list_files(
-                    google_folder_id
-                )
-                yandex_files = await self.yandex_client.list_files(
-                    yandex_folder_path
-                )
-
-                tasks = [
-                    self._sync_file_limited(g_file, yandex_files)
-                    for g_file in google_files
-                ]
-
-                await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         except Exception as e:
             error_type = type(e).__name__
@@ -110,112 +85,101 @@ class SyncManager:
             pair_stats.status = "error"
             return SyncResult(pair_stats=pair_stats, error=error_msg)
 
-        pair_stats.downloaded = self.stats["downloaded"]
-        pair_stats.updated = self.stats["updated"]
-        pair_stats.skipped = self.stats["skipped"]
-        pair_stats.errors = self.stats["errors"]
+        pair_stats.downloaded = stats.downloaded
+        pair_stats.updated = stats.updated
+        pair_stats.skipped = stats.skipped
+        pair_stats.errors = stats.errors
         pair_stats.status = "success"
 
-        self._print_stats()
+        self._print_stats(stats)
 
         return SyncResult(pair_stats=pair_stats)
 
+    async def _list_folder(
+        self, backend: StorageBackend, folder: str
+    ) -> list[FileMetadata]:
+        """List files in folder using backend's list_folder method."""
+        try:
+            return await backend.list_folder(folder)
+        except NotImplementedError:
+            raise ValueError(f"Backend '{backend.name}' cannot list files")
+
     async def _sync_file_limited(
-        self, g_file: dict[str, Any], yandex_files: dict[str, dict[str, Any]]
+        self,
+        s_file: FileMetadata,
+        dest_files: dict[str, FileMetadata],
+        dest_folder: str,
+        stats: SyncStats,
     ) -> None:
         async with self.semaphore:
-            await self._sync_file(g_file, yandex_files)
+            await self._sync_file(s_file, dest_files, dest_folder, stats)
 
     async def _sync_file(
-        self, g_file: dict[str, Any], yandex_files: dict[str, dict[str, Any]]
+        self,
+        s_file: FileMetadata,
+        dest_files: dict[str, FileMetadata],
+        dest_folder: str,
+        stats: SyncStats,
     ) -> None:
-        file_path = g_file["path"]
-        remote_path = f"{self._yandex_folder.rstrip('/')}/{file_path}"
+        file_path = s_file.path
+        remote_path = f"{dest_folder.rstrip('/')}/{file_path}"
 
-        if file_path not in yandex_files:
-            success = await self._download_and_upload(
-                g_file, remote_path, is_update=False
-            )
+        if file_path not in dest_files:
+            success = await self._download_and_upload(s_file, remote_path, is_update=False)
             async with self.stats_lock:
                 if success:
-                    self.stats["downloaded"] += 1
+                    stats.downloaded += 1
                 else:
-                    self.stats["errors"] += 1
+                    stats.errors += 1
         else:
-            y_file = yandex_files[file_path]
-            if g_file["modified"] > y_file["modified"]:
-                success = await self._download_and_upload(
-                    g_file, remote_path, is_update=True
-                )
+            d_file = dest_files[file_path]
+            if s_file.modified > d_file.modified:
+                success = await self._download_and_upload(s_file, remote_path, is_update=True)
                 async with self.stats_lock:
                     if success:
-                        self.stats["updated"] += 1
+                        stats.updated += 1
                     else:
-                        self.stats["errors"] += 1
+                        stats.errors += 1
             else:
                 logger.info(f"Пропуск (актуален): {file_path}")
                 async with self.stats_lock:
-                    self.stats["skipped"] += 1
+                    stats.skipped += 1
 
     async def _download_and_upload(
-        self, g_file: dict[str, Any], remote_path: str, is_update: bool
+        self, s_file: FileMetadata, remote_path: str, is_update: bool
     ) -> bool:
-        if not self.google_client or not self.yandex_client:
-            logger.error("Клиенты не инициализированы")
-            return False
+        file_path = s_file.path
+        action = "обновление" if is_update else "загрузка"
 
-        file_path = g_file["path"]
-        action = "Обновление" if is_update else "Загрузка"
-
-        for attempt in range(MAX_RETRIES):
-            try:
-                await self.yandex_client.ensure_parent_folders(remote_path)
-                stream = self.google_client.download_stream(
-                    g_file["id"], file_path
-                )
-                await self.yandex_client.upload_stream(
-                    stream, remote_path, overwrite=is_update
-                )
-                return True
-            except Exception as e:
-                error_type = type(e).__name__
-                error_msg = str(e) if str(e) else repr(e)
-
-                if attempt < MAX_RETRIES - 1:
-                    logger.warning(
-                        f"Ошибка при {action.lower()} {file_path}: {error_type}: {error_msg}, "
-                        f"повторная попытка через {RETRY_DELAY}с"
-                    )
-                    await asyncio.sleep(RETRY_DELAY)
-                    continue
-
-                logger.error(
-                    f"Ошибка при {action.lower()} {file_path}: {error_type}: {error_msg}"
-                )
-
-                if await self._check_file_uploaded(remote_path):
-                    logger.warning(
-                        f"Файл загружен несмотря на ошибку: {file_path}"
-                    )
-                    return True
-
-                return False
-
-        return False
-
-    async def _check_file_uploaded(self, remote_path: str) -> bool:
-        if not self.yandex_client:
-            return False
+        async def transfer() -> None:
+            await self.destination.writer.ensure_parent_folders(remote_path)
+            stream = self.source.reader.download_stream(s_file.id, file_path)
+            await self.destination.writer.upload_stream(stream, remote_path, overwrite=is_update)
 
         try:
-            return await self.yandex_client.file_exists(remote_path)
+            await _retry(transfer, MAX_RETRIES, RETRY_DELAY, label=f"{action} {file_path}")
+            return True
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e) if str(e) else repr(e)
+            logger.error(f"Ошибка при {action} {file_path}: {error_type}: {error_msg}")
+
+            if await self._check_file_uploaded(remote_path):
+                logger.warning(f"Файл загружен несмотря на ошибку: {file_path}")
+                return True
+
+            return False
+
+    async def _check_file_uploaded(self, remote_path: str) -> bool:
+        try:
+            return await self.destination.writer.file_exists(remote_path)
         except Exception:
             return False
 
-    def _print_stats(self) -> None:
+    def _print_stats(self, stats: SyncStats) -> None:
         logger.info("=== Результаты синхронизации ===")
-        logger.info(f"Загружено новых: {self.stats['downloaded']}")
-        logger.info(f"Обновлено: {self.stats['updated']}")
-        logger.info(f"Пропущено: {self.stats['skipped']}")
-        logger.info(f"Ошибок: {self.stats['errors']}")
+        logger.info(f"Загружено новых: {stats.downloaded}")
+        logger.info(f"Обновлено: {stats.updated}")
+        logger.info(f"Пропущено: {stats.skipped}")
+        logger.info(f"Ошибок: {stats.errors}")
         logger.info("=== Синхронизация завершена ===")
