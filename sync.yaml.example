@@ -1,0 +1,14 @@
+# Sync Configuration
+# Folders and sync pairs
+
+folders:
+  google_example:
+    backend: google
+    path: "https://drive.google.com/drive/folders/xxx"
+  yandex_example:
+    backend: yandex
+    path: "/backup/videos"
+
+sync_pairs:
+  - source: google_example
+    target: yandex_example

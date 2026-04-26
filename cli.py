@@ -14,8 +14,10 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры:
-  cli.py                           # запустить все sync_pairs из config.yaml
-  cli.py --config custom.yaml       # использовать альтернативный config
+  cli.py                           # запустить все sync_pairs
+  cli.py -c prod_config.yaml       # альтернативный config
+  cli.py -s prod_sync.yaml        # альтернативный sync
+  cli.py -c prod.yaml -s prod_sync.yaml
   cli.py --pair 0                  # запустить только первую пару
         """,
     )
@@ -25,6 +27,12 @@ def main() -> None:
         "--config",
         default="config.yaml",
         help="Путь к config.yaml (по умолчанию: config.yaml)",
+    )
+    parser.add_argument(
+        "-s",
+        "--sync",
+        default="sync.yaml",
+        help="Путь к sync.yaml (по умолчанию: sync.yaml)",
     )
     parser.add_argument(
         "-p",
@@ -43,7 +51,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        app_config = load_config(args.config)
+        app_config = load_config(args.config, args.sync)
     except FileNotFoundError as e:
         logger.error(f"Конфигурация не найдена: {e}")
         sys.exit(1)
@@ -110,7 +118,7 @@ async def _async_main(app_config, args) -> None:
 
 def _register_backends() -> None:
     """Register all available backend factories."""
-    # Импорт модулей触发 @register_backend декораторы
+    # Importing modules triggers @register_backend decorators
     from src.backends import google, local, yandex  # noqa: F401
 
 

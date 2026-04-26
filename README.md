@@ -13,7 +13,7 @@ uv sync
 ## Быстрый старт
 
 ```bash
-# 1. Создайте config.yaml (见 пример ниже)
+# 1. Настройте config.yaml и sync.yaml (см. примеры ниже)
 # 2. Создайте auth.yaml с токенами или экспортируйте ENV переменные
 # 3. Запустите синхронизацию
 uv run python cli.py
@@ -23,7 +23,7 @@ uv run python cli.py
 
 ### config.yaml
 
-Основной файл конфигурации:
+Конфигурация приложения: бэкенды и логирование.
 
 ```yaml
 backends:
@@ -38,6 +38,16 @@ backends:
   local:
     root: "/mnt/backup"
 
+logging:
+  file: "sync.log"
+  level: "INFO"
+```
+
+### sync.yaml
+
+Конфигурация синхронизации: папки и пары.
+
+```yaml
 folders:
   photos_google:
     backend: google
@@ -54,10 +64,6 @@ folders:
 sync_pairs:
   - source: photos_google
     target: photos_yandex
-
-logging:
-  file: "sync.log"
-  level: "INFO"
 ```
 
 ### Авторизация
@@ -116,11 +122,11 @@ yandex:
 ## Запуск
 
 ```bash
-# Запустить все sync_pairs из config.yaml
+# Запустить все sync_pairs
 uv run python cli.py
 
-# Использовать альтернативный config
-uv run python cli.py --config production.yaml
+# Использовать альтернативные конфиги
+uv run python cli.py --config prod_config.yaml --sync prod_sync.yaml
 
 # Запустить только первую пару
 uv run python cli.py --pair 0
@@ -136,6 +142,7 @@ uv run python cli.py --pair 0 --pair 2
 | Аргумент | Описание |
 |----------|----------|
 | `-c`, `--config` | Путь к config.yaml (по умолчанию: config.yaml) |
+| `-s`, `--sync` | Путь к sync.yaml (по умолчанию: sync.yaml) |
 | `-p`, `--pair` | Индекс пары для синхронизации (можно указать несколько) |
 
 ## Как работает
@@ -171,13 +178,17 @@ uv run python cli.py --pair 0 --pair 2
 
 2. Зарегистрируйте в `src/backends/__init__.py`
 
-3. Добавьте в config.yaml:
+3. Добавьте в config.yaml и sync.yaml:
 
 ```yaml
+# config.yaml
 backends:
   mybackend:
     api_key: ${MY_API_KEY}
+```
 
+```yaml
+# sync.yaml
 folders:
   my_data:
     backend: mybackend
@@ -192,28 +203,29 @@ sync_pairs:
 
 ```
 disks_sync/
-├── config.yaml              # Конфигурация хранилищ и синхронизации
-├── auth.yaml                # Секреты (не коммитить)
-├── cli.py                   # Точка входа
-├── pyproject.toml           # Зависимости
+├── config.yaml              # Бэкенды и логирование
+├── sync.yaml               # Папки и пары синхронизации
+├── auth.yaml               # Секреты (не коммитить)
+├── cli.py                  # Точка входа
+├── pyproject.toml          # Зависимости
 │
 └── src/
-    ├── __init__.py          # Экспорт основных классов
-    ├── protocols.py         # Интерфейсы: Authenticator, Reader, Writer, StorageBackend
-    ├── factories.py         # BackendRegistry, @register_backend
-    ├── sync.py              # SyncManager — логика синхронизации
-    ├── models.py            # SyncStats, PairStats, SyncResult
-    ├── logger.py            # Логирование
+    ├── __init__.py         # Экспорт основных классов
+    ├── protocols.py        # Интерфейсы: Authenticator, Reader, Writer, StorageBackend
+    ├── factories.py        # BackendRegistry, @register_backend
+    ├── sync.py             # SyncManager — логика синхронизации
+    ├── models.py           # SyncStats, PairStats, SyncResult
+    ├── logger.py           # Логирование
     │
-    ├── google_drive.py      # Google Drive API клиент
+    ├── google_drive.py     # Google Drive API клиент
     ├── yandex_disk.py      # Яндекс Диск API клиент
     ├── oauth_callback_server.py  # OAuth callback сервер
     │
     └── backends/
-        ├── __init__.py      # Экспорт фабрик
-        ├── google.py        # Google Drive backend
-        ├── yandex.py        # Yandex Disk backend
-        └── local.py         # Local filesystem backend
+        ├── __init__.py     # Экспорт фабрик
+        ├── google.py       # Google Drive backend
+        ├── yandex.py       # Yandex Disk backend
+        └── local.py        # Local filesystem backend
 ```
 
 ## Cron

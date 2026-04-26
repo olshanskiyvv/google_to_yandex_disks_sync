@@ -1,36 +1,14 @@
-# Disks Sync Configuration
-#
-# This is the base configuration file. Secrets should be in auth.yaml
-# or provided via environment variables.
+# Application Configuration
+# Backends and authentication
 
 backends:
   google:
-    credentials_file: "credentials.json"
-    token_file: "token.json"
+    credentials_file: ${GOOGLE_CREDENTIALS_FILE}
+    token_file: ${GOOGLE_TOKEN_FILE}
     use_auto_oauth: true
-
   yandex:
+    token: ${YANDEX_TOKEN}
     timeout: 30
-
-  local:
-    root: "/mnt/backup"
-
-folders:
-  photos_google:
-    backend: google
-    path: "Backups/Photos"
-
-  photos_yandex:
-    backend: yandex
-    path: "MyBackup/Photos"
-
-  docs_local:
-    backend: local
-    path: "/documents"
-
-sync_pairs:
-  - source: photos_google
-    target: photos_yandex
 
 logging:
   file: "sync.log"

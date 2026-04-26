@@ -76,7 +76,12 @@ class SyncManager:
                 for s_file in source_files
             ]
 
-            await asyncio.gather(*tasks, return_exceptions=True)
+            task_results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in task_results:
+                if isinstance(r, BaseException):
+                    logger.error(f"Unhandled sync error: {r}")
+                    async with self.stats_lock:
+                        stats.errors += 1
 
         except Exception as e:
             error_type = type(e).__name__

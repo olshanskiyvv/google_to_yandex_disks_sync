@@ -122,6 +122,12 @@ class StorageBackend:
         """
         raise NotImplementedError(f"Backend '{self.name}' does not support listing")
 
+    async def __aenter__(self) -> "StorageBackend":
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        await self.close()
+
     async def close(self) -> None:
         """Close all resources."""
         await self.authenticator.close()

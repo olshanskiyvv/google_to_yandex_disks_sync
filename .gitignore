@@ -8,5 +8,5 @@ __pycache__/
 *.pyc
 .uv/
 uv.lock
-sync_pairs.json
+sync.yaml
 run_sync.sh

@@ -5,14 +5,15 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
+
+_ENV_VAR_RE = re.compile(r"\$\{([^}]+)\}")
 
 
 def _resolve_env_vars(value: Any) -> Any:
     """Recursively resolve ${ENV_VAR} placeholders in config values."""
     if isinstance(value, str):
-        pattern = re.compile(r"\$\{([^}]+)\}")
-        matches = pattern.findall(value)
-        for var_name in matches:
+        for var_name in _ENV_VAR_RE.findall(value):
             env_value = os.getenv(var_name, "")
             value = value.replace(f"${{{var_name}}}", env_value)
         return value
@@ -45,58 +46,53 @@ class AppConfig:
     Application configuration loaded from YAML files.
 
     Priority order:
-    1. auth.yaml (if exists) - secrets, have highest priority
-    2. config.yaml - base configuration
-    3. Environment variables - used for ${ENV_VAR} resolution
+    1. config.yaml - base configuration
+    2. Environment variables - used for ${ENV_VAR} resolution
     """
 
     backends: dict[str, dict] = field(default_factory=dict)
     folders: dict[str, FolderDef] = field(default_factory=dict)
     sync_pairs: list[SyncPair] = field(default_factory=list)
     logging: dict = field(default_factory=dict)
-    _auth_loaded: bool = False
 
     @classmethod
-    def load(cls, config_path: str = "config.yaml") -> "AppConfig":
+    def load(cls, config_path: str = "config.yaml", sync_path: str = "sync.yaml") -> "AppConfig":
         """
         Load configuration from YAML files.
 
         Args:
-            config_path: Path to main config.yaml
+            config_path: Path to config.yaml (backends + logging)
+            sync_path: Path to sync.yaml (folders + sync pairs)
 
         Returns:
             AppConfig instance
         """
-        config_file = Path(config_path)
+        load_dotenv()
 
+        config_file = Path(config_path)
         if not config_file.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
+
+        sync_file = Path(sync_path)
+        if not sync_file.exists():
+            raise FileNotFoundError(f"Sync file not found: {sync_path}")
 
         with open(config_file) as f:
             base_config = yaml.safe_load(f) or {}
 
+        with open(sync_file) as f:
+            sync_config = yaml.safe_load(f) or {}
+
         backends = base_config.get("backends", {})
 
-        # Load auth.yaml if exists (higher priority)
-        auth_path = Path("auth.yaml")
-        if auth_path.exists():
-            with open(auth_path) as f:
-                auth_config = yaml.safe_load(f) or {}
-            for backend_name, auth_data in auth_config.items():
-                if backend_name in backends:
-                    backends[backend_name].update(auth_data)
-                else:
-                    backends[backend_name] = auth_data
-            config = cls(_auth_loaded=True)
-        else:
-            config = cls(_auth_loaded=False)
-
+        config = cls()
+        
         # Resolve environment variables
         config.backends = _resolve_env_vars(backends)
         config.logging = _resolve_env_vars(base_config.get("logging", {}))
 
-        # Parse folders
-        folders_raw = base_config.get("folders", {})
+        # Parse folders and sync pairs from sync.yaml
+        folders_raw = sync_config.get("folders", {})
         config.folders = {
             name: FolderDef(
                 backend=folder_data["backend"],
@@ -105,8 +101,7 @@ class AppConfig:
             for name, folder_data in folders_raw.items()
         }
 
-        # Parse sync pairs
-        sync_pairs_raw = base_config.get("sync_pairs", [])
+        sync_pairs_raw = sync_config.get("sync_pairs", [])
         config.sync_pairs = [
             SyncPair(source=pair["source"], target=pair["target"])
             for pair in sync_pairs_raw
@@ -127,13 +122,13 @@ class AppConfig:
         for name, backend_config in self.backends.items():
             if name == "google":
                 if "credentials_file" not in backend_config:
-                    errors.append(f"Backend 'google' missing 'credentials_file'")
+                    errors.append("Backend 'google' missing 'credentials_file'")
             elif name == "yandex":
                 if "token" not in backend_config or not backend_config["token"]:
-                    errors.append(f"Backend 'yandex' missing valid 'token'")
+                    errors.append("Backend 'yandex' missing valid 'token'")
             elif name == "local":
                 if "root" not in backend_config:
-                    errors.append(f"Backend 'local' missing 'root'")
+                    errors.append("Backend 'local' missing 'root'")
 
         # Validate folders reference existing backends
         for name, folder in self.folders.items():
@@ -155,14 +150,14 @@ class AppConfig:
 _config: AppConfig | None = None
 
 
-def load_config(config_path: str = "config.yaml") -> AppConfig:
+def load_config(config_path: str = "config.yaml", sync_path: str = "sync.yaml") -> AppConfig:
     """Load and validate configuration."""
     global _config
-    _config = AppConfig.load(config_path)
+    _config = AppConfig.load(config_path, sync_path)
 
     errors = _config.validate()
     if errors:
-        raise ValueError(f"Config validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
+        raise ValueError("Config validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
 
     return _config
 

@@ -1,4 +1,3 @@
-import argparse
 import asyncio
 import sys
 
@@ -9,28 +8,8 @@ from src.sync import SyncManager
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Синхронизация между хранилищами"
-    )
-    parser.add_argument(
-        "-c",
-        "--config",
-        default="config.yaml",
-        help="Путь к config.yaml (по умолчанию: config.yaml)",
-    )
-    parser.add_argument(
-        "-p",
-        "--pair",
-        type=int,
-        action="append",
-        dest="pairs",
-        help="Индекс пары для синхронизации (можно указать несколько)",
-    )
-
-    args = parser.parse_args()
-
     try:
-        app_config = load_config(args.config)
+        app_config = load_config()
     except FileNotFoundError as e:
         logger.error(f"Конфигурация не найдена: {e}")
         sys.exit(1)
@@ -39,7 +18,7 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        asyncio.run(_async_main(app_config, args))
+        asyncio.run(_async_main(app_config))
     except KeyboardInterrupt:
         logger.info("Синхронизация прервана пользователем")
         sys.exit(0)
@@ -48,23 +27,15 @@ def main() -> None:
         raise
 
 
-async def _async_main(app_config, args) -> None:
+async def _async_main(app_config) -> None:
     # Регистрируем бэкенды
     from src.backends import google, local, yandex  # noqa: F401
 
     registry = get_registry()
 
-    # Выбираем пары для синхронизации
-    pairs_to_run = args.pairs if args.pairs is not None else range(len(app_config.sync_pairs))
-
     results = []
 
-    for pair_index in pairs_to_run:
-        if pair_index >= len(app_config.sync_pairs):
-            logger.error(f"Пара {pair_index} не существует (всего {len(app_config.sync_pairs)})")
-            continue
-
-        pair = app_config.sync_pairs[pair_index]
+    for pair_index, pair in enumerate(app_config.sync_pairs):
         logger.info(f"\n=== Синхронизация пары {pair_index}: {pair.source} -> {pair.target} ===")
 
         try:
@@ -89,8 +60,13 @@ async def _async_main(app_config, args) -> None:
             logger.error(f"Неизвестный бэкенд: {source_folder.backend}")
             continue
 
+        target_factory = registry.get_factory(target_folder.backend)
+        if not target_factory:
+            logger.error(f"Неизвестный бэкенд: {target_folder.backend}")
+            continue
+
         source_backend = factory.from_namespace(source_backend_config)
-        target_backend = registry.get_factory(target_folder.backend).from_namespace(target_backend_config)
+        target_backend = target_factory.from_namespace(target_backend_config)
 
         async with source_backend, target_backend:
             await source_backend.authenticator.authenticate()
