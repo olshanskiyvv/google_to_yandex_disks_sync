@@ -36,8 +36,16 @@ class FolderDef:
 class SyncPair:
     """A sync pair defining source and target folders."""
 
-    source: str
-    target: str
+    source: FolderDef
+    target: FolderDef
+
+
+def _resolve_folder(value: Any, folders: dict[str, "FolderDef"]) -> "FolderDef":
+    if isinstance(value, str):
+        if value not in folders:
+            raise ValueError(f"Unknown folder reference: '{value}'")
+        return folders[value]
+    return FolderDef(backend=value["backend"], path=value["path"])
 
 
 @dataclass
@@ -103,7 +111,10 @@ class AppConfig:
 
         sync_pairs_raw = sync_config.get("sync_pairs", [])
         config.sync_pairs = [
-            SyncPair(source=pair["source"], target=pair["target"])
+            SyncPair(
+                source=_resolve_folder(pair["source"], config.folders),
+                target=_resolve_folder(pair["target"], config.folders),
+            )
             for pair in sync_pairs_raw
         ]
 
@@ -130,18 +141,17 @@ class AppConfig:
                 if "root" not in backend_config:
                     errors.append("Backend 'local' missing 'root'")
 
-        # Validate folders reference existing backends
+        # Validate named folders reference existing backends
         for name, folder in self.folders.items():
             if folder.backend not in self.backends:
                 errors.append(f"Folder '{name}' references unknown backend '{folder.backend}'")
 
-        # Validate sync pairs reference existing folders
-        folder_names = set(self.folders.keys())
+        # Validate sync pair backends exist
         for i, pair in enumerate(self.sync_pairs):
-            if pair.source not in folder_names:
-                errors.append(f"Sync pair {i}: source '{pair.source}' not found in folders")
-            if pair.target not in folder_names:
-                errors.append(f"Sync pair {i}: target '{pair.target}' not found in folders")
+            if pair.source.backend not in self.backends:
+                errors.append(f"Sync pair {i} source: unknown backend '{pair.source.backend}'")
+            if pair.target.backend not in self.backends:
+                errors.append(f"Sync pair {i} target: unknown backend '{pair.target.backend}'")
 
         return errors
 

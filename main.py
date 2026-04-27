@@ -36,14 +36,9 @@ async def _async_main(app_config) -> None:
     results = []
 
     for pair_index, pair in enumerate(app_config.sync_pairs):
-        logger.info(f"\n=== Синхронизация пары {pair_index}: {pair.source} -> {pair.target} ===")
-
-        try:
-            source_folder = app_config.folders[pair.source]
-            target_folder = app_config.folders[pair.target]
-        except KeyError as e:
-            logger.error(f"Папка не найдена: {e}")
-            continue
+        source_folder = pair.source
+        target_folder = pair.target
+        logger.info(f"\n=== Синхронизация пары {pair_index}: {source_folder.backend}:{source_folder.path} -> {target_folder.backend}:{target_folder.path} ===")
 
         source_backend_config = app_config.backends.get(source_folder.backend)
         target_backend_config = app_config.backends.get(target_folder.backend)
